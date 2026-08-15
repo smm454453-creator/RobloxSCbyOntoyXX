@@ -1,7 +1,7 @@
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
-local Workspace = game:GetService("Workspace")
 local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
 local Camera = Workspace.CurrentCamera
 
 local LocalPlayer = Players.LocalPlayer
@@ -19,69 +19,41 @@ local CONFIG = {
 
 local LockedTarget = nil
 local ESP_Objects = {}
+local AbilityKeys = {
+    Enum.KeyCode.Z,
+    Enum.KeyCode.X,
+    Enum.KeyCode.C,
+    Enum.KeyCode.V,
+    Enum.KeyCode.F,
+    Enum.KeyCode.R,
+    Enum.KeyCode.E,
+    Enum.KeyCode.Q,
+    Enum.KeyCode.One,
+    Enum.KeyCode.Two,
+    Enum.KeyCode.Three,
+}
 
-local function GetClosestToCursor()
-    local closestPlayer = nil
-    local closestDistance = math.huge
-    local center = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+local function SnapToTarget()
+    if not LockedTarget or not LockedTarget.Character then return end
+    local targetRoot = LockedTarget.Character:FindFirstChild("HumanoidRootPart")
+    local humanoid = LockedTarget.Character:FindFirstChild("Humanoid")
+    if not targetRoot or not humanoid or humanoid.Health <= 0 then return end
 
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player ~= LocalPlayer and player.Character then
-            local root = player.Character:FindFirstChild("HumanoidRootPart")
-            local humanoid = player.Character:FindFirstChild("Humanoid")
-            if root and humanoid and humanoid.Health > 0 then
-                local screenPos, onScreen = Camera:WorldToScreenPoint(root.Position)
-                if onScreen then
-                    local dist = (Vector2.new(screenPos.X, screenPos.Y) - center).Magnitude
-                    if dist < closestDistance then
-                        closestDistance = dist
-                        closestPlayer = player
-                    end
-                end
-            end
+    local direction = (targetRoot.Position - LocalRoot.Position).Unit
+    LocalRoot.CFrame = CFrame.new(LocalRoot.Position, LocalRoot.Position + Vector3.new(direction.X, 0, direction.Z))
+end
+
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+    if not CONFIG.Mode1 or not LockedTarget then return end
+
+    for _, key in ipairs(AbilityKeys) do
+        if input.KeyCode == key then
+            SnapToTarget()
+            break
         end
     end
-
-    return closestPlayer
-end
-
-local function GetClosestToBody()
-    local closest = nil
-    local shortestDistance = CONFIG.Jarak
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player ~= LocalPlayer and player.Character then
-            local root = player.Character:FindFirstChild("HumanoidRootPart")
-            local humanoid = player.Character:FindFirstChild("Humanoid")
-            if root and humanoid and humanoid.Health > 0 then
-                local distance = (root.Position - LocalRoot.Position).Magnitude
-                if distance < shortestDistance then
-                    shortestDistance = distance
-                    closest = player
-                end
-            end
-        end
-    end
-    return closest
-end
-
-local function Mode1Func()
-    if not LockedTarget then return end
-    local character = LockedTarget.Character
-    if not character then return end
-    local root = character:FindFirstChild("HumanoidRootPart")
-    local humanoid = character:FindFirstChild("Humanoid")
-    if not root or not humanoid or humanoid.Health <= 0 then
-        LockedTarget = nil
-        return
-    end
-
-    LocalRoot.CFrame = CFrame.new(
-        LocalRoot.Position,
-        Vector3.new(root.Position.X, LocalRoot.Position.Y, root.Position.Z)
-    )
-
-    Camera.CFrame = CFrame.new(Camera.CFrame.Position, root.Position)
-end
+end)
 
 local function Mode2Func(centerPosition)
     local hitboxPart = Instance.new("Part")
@@ -189,14 +161,13 @@ local function RenderESP()
 
                     local hpRatio = humanoid.Health / humanoid.MaxHealth
                     local barHeight = height * hpRatio
-                    local barColor = Color3.fromRGB(
+                    esp.HealthBar.Size = Vector2.new(4, barHeight)
+                    esp.HealthBar.Position = Vector2.new(boxPos.X - 7, boxPos.Y + (height - barHeight))
+                    esp.HealthBar.Color = Color3.fromRGB(
                         math.floor(255 * (1 - hpRatio)),
                         math.floor(255 * hpRatio),
                         0
                     )
-                    esp.HealthBar.Size = Vector2.new(4, barHeight)
-                    esp.HealthBar.Position = Vector2.new(boxPos.X - 7, boxPos.Y + (height - barHeight))
-                    esp.HealthBar.Color = barColor
                     esp.HealthBar.Visible = true
 
                     local dist = math.floor((root.Position - LocalRoot.Position).Magnitude)
@@ -246,37 +217,33 @@ toggleButton.Font = Enum.Font.GothamBold
 toggleButton.TextSize = 12
 toggleButton.BorderSizePixel = 0
 toggleButton.Parent = outerFrame
-
-local UICornerToggle = Instance.new("UICorner")
-UICornerToggle.CornerRadius = UDim.new(0, 6)
-UICornerToggle.Parent = toggleButton
+local c0 = Instance.new("UICorner")
+c0.CornerRadius = UDim.new(0, 6)
+c0.Parent = toggleButton
 
 local mainFrame = Instance.new("Frame")
-mainFrame.Size = UDim2.new(0, 220, 0, 280)
+mainFrame.Size = UDim2.new(0, 230, 0, 380)
 mainFrame.Position = UDim2.new(0, 10, 0, 48)
 mainFrame.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
 mainFrame.BorderSizePixel = 0
 mainFrame.Visible = false
 mainFrame.Parent = screenGui
-
-local UICornerMain = Instance.new("UICorner")
-UICornerMain.CornerRadius = UDim.new(0, 10)
-UICornerMain.Parent = mainFrame
-
-local UIStroke = Instance.new("UIStroke")
-UIStroke.Color = Color3.fromRGB(60, 60, 80)
-UIStroke.Thickness = 1
-UIStroke.Parent = mainFrame
+local c1 = Instance.new("UICorner")
+c1.CornerRadius = UDim.new(0, 10)
+c1.Parent = mainFrame
+local stroke = Instance.new("UIStroke")
+stroke.Color = Color3.fromRGB(60, 60, 80)
+stroke.Thickness = 1
+stroke.Parent = mainFrame
 
 local titleBar = Instance.new("Frame")
 titleBar.Size = UDim2.new(1, 0, 0, 36)
 titleBar.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
 titleBar.BorderSizePixel = 0
 titleBar.Parent = mainFrame
-
-local UICornerTitle = Instance.new("UICorner")
-UICornerTitle.CornerRadius = UDim.new(0, 10)
-UICornerTitle.Parent = titleBar
+local c2 = Instance.new("UICorner")
+c2.CornerRadius = UDim.new(0, 10)
+c2.Parent = titleBar
 
 local titleLabel = Instance.new("TextLabel")
 titleLabel.Size = UDim2.new(1, -40, 1, 0)
@@ -299,14 +266,41 @@ closeButton.Font = Enum.Font.GothamBold
 closeButton.TextSize = 11
 closeButton.BorderSizePixel = 0
 closeButton.Parent = titleBar
+local c3 = Instance.new("UICorner")
+c3.CornerRadius = UDim.new(0, 6)
+c3.Parent = closeButton
 
-local UICornerClose = Instance.new("UICorner")
-UICornerClose.CornerRadius = UDim.new(0, 6)
-UICornerClose.Parent = closeButton
+-- Target selector
+local targetLabel = Instance.new("TextLabel")
+targetLabel.Size = UDim2.new(1, -20, 0, 16)
+targetLabel.Position = UDim2.new(0, 10, 0, 44)
+targetLabel.BackgroundTransparency = 1
+targetLabel.Text = "SELECT TARGET"
+targetLabel.TextColor3 = Color3.fromRGB(120, 120, 150)
+targetLabel.Font = Enum.Font.GothamBold
+targetLabel.TextSize = 10
+targetLabel.TextXAlignment = Enum.TextXAlignment.Left
+targetLabel.Parent = mainFrame
+
+local playerListFrame = Instance.new("ScrollingFrame")
+playerListFrame.Size = UDim2.new(1, -20, 0, 100)
+playerListFrame.Position = UDim2.new(0, 10, 0, 62)
+playerListFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 32)
+playerListFrame.BorderSizePixel = 0
+playerListFrame.ScrollBarThickness = 3
+playerListFrame.ScrollBarImageColor3 = Color3.fromRGB(80, 80, 120)
+playerListFrame.Parent = mainFrame
+local c4 = Instance.new("UICorner")
+c4.CornerRadius = UDim.new(0, 6)
+c4.Parent = playerListFrame
+local listLayout = Instance.new("UIListLayout")
+listLayout.SortOrder = Enum.SortOrder.Name
+listLayout.Padding = UDim.new(0, 2)
+listLayout.Parent = playerListFrame
 
 local lockLabel = Instance.new("TextLabel")
-lockLabel.Size = UDim2.new(1, -20, 0, 18)
-lockLabel.Position = UDim2.new(0, 10, 0, 42)
+lockLabel.Size = UDim2.new(1, -20, 0, 16)
+lockLabel.Position = UDim2.new(0, 10, 0, 170)
 lockLabel.BackgroundTransparency = 1
 lockLabel.Text = "TARGET: none"
 lockLabel.TextColor3 = Color3.fromRGB(150, 150, 180)
@@ -314,6 +308,63 @@ lockLabel.Font = Enum.Font.Gotham
 lockLabel.TextSize = 11
 lockLabel.TextXAlignment = Enum.TextXAlignment.Left
 lockLabel.Parent = mainFrame
+
+local function SetLockLabel(player)
+    if player then
+        lockLabel.Text = "TARGET: " .. player.Name
+        lockLabel.TextColor3 = Color3.fromRGB(0, 255, 100)
+    else
+        lockLabel.Text = "TARGET: none"
+        lockLabel.TextColor3 = Color3.fromRGB(150, 150, 180)
+    end
+end
+
+local playerButtons = {}
+
+local function RefreshPlayerList()
+    for _, btn in pairs(playerButtons) do
+        btn:Destroy()
+    end
+    playerButtons = {}
+
+    local totalHeight = 0
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer then
+            local btn = Instance.new("TextButton")
+            btn.Size = UDim2.new(1, -6, 0, 28)
+            btn.BackgroundColor3 = (LockedTarget == player) and Color3.fromRGB(0, 120, 60) or Color3.fromRGB(35, 35, 48)
+            btn.Text = "  " .. player.Name
+            btn.TextColor3 = Color3.fromRGB(220, 220, 255)
+            btn.Font = Enum.Font.Gotham
+            btn.TextSize = 11
+            btn.TextXAlignment = Enum.TextXAlignment.Left
+            btn.BorderSizePixel = 0
+            btn.Parent = playerListFrame
+            local bc = Instance.new("UICorner")
+            bc.CornerRadius = UDim.new(0, 4)
+            bc.Parent = btn
+
+            btn.MouseButton1Click:Connect(function()
+                if LockedTarget == player then
+                    LockedTarget = nil
+                    SetLockLabel(nil)
+                else
+                    LockedTarget = player
+                    SetLockLabel(player)
+                end
+                RefreshPlayerList()
+            end)
+
+            playerButtons[player] = btn
+            totalHeight = totalHeight + 30
+        end
+    end
+    playerListFrame.CanvasSize = UDim2.new(0, 0, 0, totalHeight)
+end
+
+RefreshPlayerList()
+Players.PlayerAdded:Connect(function() RefreshPlayerList() end)
+Players.PlayerRemoving:Connect(function() RefreshPlayerList() end)
 
 local function MakeButton(text, yPos)
     local btn = Instance.new("TextButton")
@@ -333,24 +384,10 @@ local function MakeButton(text, yPos)
     return btn
 end
 
-local mode1Button = MakeButton("MODE 1  —  Body Lock", 68)
-local mode2Button = MakeButton("MODE 2  —  Hitbox", 108)
-local mode3Button = MakeButton("MODE 3  —  ESP", 148)
-local mode4Button = MakeButton("MODE 4  —  Tracers", 188)
-
-local selectButton = Instance.new("TextButton")
-selectButton.Size = UDim2.new(1, -20, 0, 28)
-selectButton.Position = UDim2.new(0, 10, 0, 242)
-selectButton.BackgroundColor3 = Color3.fromRGB(0, 120, 200)
-selectButton.Text = "🎯  Select Target"
-selectButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-selectButton.Font = Enum.Font.GothamBold
-selectButton.TextSize = 11
-selectButton.BorderSizePixel = 0
-selectButton.Parent = mainFrame
-local UICornerSel = Instance.new("UICorner")
-UICornerSel.CornerRadius = UDim.new(0, 6)
-UICornerSel.Parent = selectButton
+local mode1Button = MakeButton("MODE 1  —  Ability Lock", 194)
+local mode2Button = MakeButton("MODE 2  —  Hitbox", 232)
+local mode3Button = MakeButton("MODE 3  —  ESP", 270)
+local mode4Button = MakeButton("MODE 4  —  Tracers", 308)
 
 local function SetToggle(btn, state, label)
     if state then
@@ -366,32 +403,20 @@ end
 
 toggleButton.MouseButton1Click:Connect(function()
     mainFrame.Visible = not mainFrame.Visible
+    if mainFrame.Visible then RefreshPlayerList() end
 end)
 
 closeButton.MouseButton1Click:Connect(function()
     screenGui:Destroy()
 end)
 
-selectButton.MouseButton1Click:Connect(function()
-    local target = GetClosestToCursor()
-    if target then
-        LockedTarget = target
-        lockLabel.Text = "TARGET: " .. target.Name
-        lockLabel.TextColor3 = Color3.fromRGB(0, 255, 100)
-    else
-        LockedTarget = nil
-        lockLabel.Text = "TARGET: none"
-        lockLabel.TextColor3 = Color3.fromRGB(150, 150, 180)
-    end
-end)
-
 mode1Button.MouseButton1Click:Connect(function()
     CONFIG.Mode1 = not CONFIG.Mode1
-    SetToggle(mode1Button, CONFIG.Mode1, "MODE 1  —  Body Lock")
+    SetToggle(mode1Button, CONFIG.Mode1, "MODE 1  —  Ability Lock")
     if not CONFIG.Mode1 then
         LockedTarget = nil
-        lockLabel.Text = "TARGET: none"
-        lockLabel.TextColor3 = Color3.fromRGB(150, 150, 180)
+        SetLockLabel(nil)
+        RefreshPlayerList()
     end
 end)
 
@@ -403,17 +428,9 @@ end)
 mode3Button.MouseButton1Click:Connect(function()
     CONFIG.Mode3 = not CONFIG.Mode3
     SetToggle(mode3Button, CONFIG.Mode3, "MODE 3  —  ESP")
-    if not CONFIG.Mode3 then
-        CONFIG.Mode4 = false
-        SetToggle(mode4Button, false, "MODE 4  —  Tracers")
-    end
 end)
 
 mode4Button.MouseButton1Click:Connect(function()
-    if not CONFIG.Mode3 then
-        CONFIG.Mode3 = true
-        SetToggle(mode3Button, true, "MODE 3  —  ESP")
-    end
     CONFIG.Mode4 = not CONFIG.Mode4
     SetToggle(mode4Button, CONFIG.Mode4, "MODE 4  —  Tracers")
 end)
@@ -424,28 +441,24 @@ LocalPlayer.CharacterAdded:Connect(function(char)
 end)
 
 RunService.RenderStepped:Connect(function()
-    if CONFIG.Mode1 and LocalRoot then
-        Mode1Func()
-    end
     if CONFIG.Mode2 and LocalRoot then
         Mode2Func(LocalRoot.Position)
     end
     if CONFIG.Mode3 then
         RenderESP()
     end
-
     if LockedTarget then
         local char = LockedTarget.Character
         if not char then
             LockedTarget = nil
-            lockLabel.Text = "TARGET: none"
-            lockLabel.TextColor3 = Color3.fromRGB(150, 150, 180)
+            SetLockLabel(nil)
+            RefreshPlayerList()
         else
             local hum = char:FindFirstChild("Humanoid")
             if hum and hum.Health <= 0 then
                 LockedTarget = nil
-                lockLabel.Text = "TARGET: none"
-                lockLabel.TextColor3 = Color3.fromRGB(150, 150, 180)
+                SetLockLabel(nil)
+                RefreshPlayerList()
             end
         end
     end
