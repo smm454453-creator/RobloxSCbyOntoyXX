@@ -18,29 +18,21 @@ local CONFIG = {
 }
 
 local LockedTarget = nil
-local OriginalTargetSize = nil
+local OriginalLocalSize = nil
 local ESP_Objects = {}
 
 local function ExpandHitbox()
-    if not LockedTarget or not LockedTarget.Character then return end
-    local root = LockedTarget.Character:FindFirstChild("HumanoidRootPart")
-    if not root then return end
-    if not OriginalTargetSize then
-        OriginalTargetSize = root.Size
+    if not OriginalLocalSize then
+        OriginalLocalSize = LocalRoot.Size
     end
-    root.Size = Vector3.new(CONFIG.HitboxSize, CONFIG.HitboxSize, CONFIG.HitboxSize)
+    LocalRoot.Size = Vector3.new(CONFIG.HitboxSize, CONFIG.HitboxSize, CONFIG.HitboxSize)
 end
 
 local function RestoreHitbox()
-    if not LockedTarget or not LockedTarget.Character then
-        OriginalTargetSize = nil
-        return
+    if OriginalLocalSize then
+        LocalRoot.Size = OriginalLocalSize
+        OriginalLocalSize = nil
     end
-    local root = LockedTarget.Character:FindFirstChild("HumanoidRootPart")
-    if root and OriginalTargetSize then
-        root.Size = OriginalTargetSize
-    end
-    OriginalTargetSize = nil
 end
 
 local function Mode2Func(centerPosition)
@@ -105,7 +97,6 @@ end)
 
 Players.PlayerRemoving:Connect(function(player)
     if player == LockedTarget then
-        OriginalTargetSize = nil
         LockedTarget = nil
     end
     CleanupESP(player)
@@ -322,14 +313,11 @@ local function RefreshPlayerList()
             bc.Parent = btn
             btn.MouseButton1Click:Connect(function()
                 if LockedTarget == player then
-                    if CONFIG.Mode1 then RestoreHitbox() end
                     LockedTarget = nil
                     SetLockLabel(nil)
                 else
-                    if LockedTarget and CONFIG.Mode1 then RestoreHitbox() end
                     LockedTarget = player
                     SetLockLabel(player)
-                    if CONFIG.Mode1 then ExpandHitbox() end
                 end
                 RefreshPlayerList()
             end)
@@ -392,9 +380,7 @@ end)
 mode1Button.MouseButton1Click:Connect(function()
     CONFIG.Mode1 = not CONFIG.Mode1
     SetToggle(mode1Button, CONFIG.Mode1, "MODE 1  —  Hitbox Expand")
-    if CONFIG.Mode1 then
-        if LockedTarget then ExpandHitbox() end
-    else
+    if not CONFIG.Mode1 then
         RestoreHitbox()
     end
 end)
@@ -417,10 +403,11 @@ end)
 LocalPlayer.CharacterAdded:Connect(function(char)
     LocalCharacter = char
     LocalRoot = char:WaitForChild("HumanoidRootPart")
+    OriginalLocalSize = nil
 end)
 
 RunService.RenderStepped:Connect(function()
-    if CONFIG.Mode1 and LockedTarget then
+    if CONFIG.Mode1 then
         ExpandHitbox()
     end
     if CONFIG.Mode2 and LocalRoot then
@@ -432,14 +419,12 @@ RunService.RenderStepped:Connect(function()
     if LockedTarget then
         local char = LockedTarget.Character
         if not char then
-            RestoreHitbox()
             LockedTarget = nil
             SetLockLabel(nil)
             RefreshPlayerList()
         else
             local hum = char:FindFirstChild("Humanoid")
             if hum and hum.Health <= 0 then
-                RestoreHitbox()
                 LockedTarget = nil
                 SetLockLabel(nil)
                 RefreshPlayerList()
