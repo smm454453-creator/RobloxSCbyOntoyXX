@@ -14,9 +14,7 @@ local LocalHumanoid = LocalCharacter:WaitForChild("Humanoid")
 local CONFIG = {
     Mode1 = false, Mode2 = false, Mode3 = false,
     Mode4 = false, Mode5 = false, Mode6 = false,
-    Mode7 = false,
-    Mode8 = false,
-    Mode9 = false,
+    Mode7 = false, Mode8 = false, Mode9 = false,
     HitboxPercent   = 1,
     SpeedPercent    = 50,
     Radius          = 15,
@@ -31,6 +29,7 @@ local MAX_SPEED     = 500
 local MIN_HITBOX    = 4
 local MAX_HITBOX    = 80
 local DASH_INTERVAL = 0.08
+local MIN_FLY_Y     = 80
 
 local OriginalLocalSize = nil
 local ESP_Objects       = {}
@@ -47,74 +46,68 @@ local CommF = nil
 
 task.spawn(function()
     local ok = pcall(function()
-        local net = ReplicatedStorage
-            :WaitForChild("Modules", 5)
-            :WaitForChild("Net", 5)
-        RegisterAttack = net:WaitForChild("RegisterAttack", 5)
+        local net = ReplicatedStorage:WaitForChild("Modules",5):WaitForChild("Net",5)
+        RegisterAttack = net:WaitForChild("RegisterAttack",5)
     end)
     if not ok or not RegisterAttack then
-        RegisterAttack = ReplicatedStorage:FindFirstChild("RegisterAttack", true)
+        RegisterAttack = ReplicatedStorage:FindFirstChild("RegisterAttack",true)
     end
 end)
 
 task.spawn(function()
     pcall(function()
-        CommF = ReplicatedStorage
-            :WaitForChild("Remotes", 5)
-            :WaitForChild("CommF_", 5)
+        CommF = ReplicatedStorage:WaitForChild("Remotes",5):WaitForChild("CommF_",5)
     end)
 end)
 
 local LevelDatabase = {
-    {Sea=1, MinLvl=1,    MaxLvl=9,    Island="Starter Island",   MobFolder="Enemies", MobName="Bandit",           QuestName="BanditQuest",     QuestNum=1, NPCCFrame=CFrame.new(977.8, 6.4, 1574.1)},
-    {Sea=1, MinLvl=10,   MaxLvl=14,   Island="Jungle",           MobFolder="Enemies", MobName="Monkey",           QuestName="JungleQuest",     QuestNum=1, NPCCFrame=CFrame.new(-1600, 36, 153)},
-    {Sea=1, MinLvl=15,   MaxLvl=29,   Island="Jungle",           MobFolder="Enemies", MobName="Gorilla",          QuestName="JungleQuest",     QuestNum=2, NPCCFrame=CFrame.new(-1600, 36, 153)},
-    {Sea=1, MinLvl=30,   MaxLvl=59,   Island="Pirate Village",   MobFolder="Enemies", MobName="Pirate",           QuestName="PirateQuest",     QuestNum=1, NPCCFrame=CFrame.new(-1142.2, 4, 3828.9)},
-    {Sea=1, MinLvl=60,   MaxLvl=89,   Island="Desert",           MobFolder="Enemies", MobName="Desert Bandit",    QuestName="DesertQuest",     QuestNum=1, NPCCFrame=CFrame.new(924.5, 5.5, 4446.3)},
-    {Sea=1, MinLvl=90,   MaxLvl=119,  Island="Frozen Village",   MobFolder="Enemies", MobName="Snow Bandit",      QuestName="SnowQuest",       QuestNum=1, NPCCFrame=CFrame.new(-1332, 5, -3050)},
-    {Sea=1, MinLvl=120,  MaxLvl=149,  Island="Marine Fortress",  MobFolder="Enemies", MobName="Marine",           QuestName="MarineQuest",     QuestNum=1, NPCCFrame=CFrame.new(4240, 33, 716)},
-    {Sea=1, MinLvl=150,  MaxLvl=174,  Island="Skylands",         MobFolder="Enemies", MobName="Sky Bandit",       QuestName="SkyQuest",        QuestNum=1, NPCCFrame=CFrame.new(498, 858, -1301)},
-    {Sea=1, MinLvl=175,  MaxLvl=209,  Island="Prison",           MobFolder="Enemies", MobName="Prisoner",         QuestName="PrisonQuest",     QuestNum=1, NPCCFrame=CFrame.new(27, 73, -3312)},
-    {Sea=1, MinLvl=210,  MaxLvl=249,  Island="Colosseum",        MobFolder="Enemies", MobName="Toga Warrior",     QuestName="ColosseumQuest",  QuestNum=1, NPCCFrame=CFrame.new(-2027, 7, -3009)},
-    {Sea=1, MinLvl=250,  MaxLvl=299,  Island="Magma Village",    MobFolder="Enemies", MobName="Magma Ninja",      QuestName="MagmaQuest",      QuestNum=1, NPCCFrame=CFrame.new(450, 126, -4800)},
-    {Sea=1, MinLvl=300,  MaxLvl=374,  Island="Upper Skylands",   MobFolder="Enemies", MobName="Sky Pirate",       QuestName="UpperSkyQuest",   QuestNum=1, NPCCFrame=CFrame.new(-2418, 1437, 1887)},
-    {Sea=1, MinLvl=375,  MaxLvl=424,  Island="Fountain City",    MobFolder="Enemies", MobName="Galley Pirate",    QuestName="FountainQuest",   QuestNum=1, NPCCFrame=CFrame.new(-779.8, 72.5, -3463.8)},
-    {Sea=1, MinLvl=425,  MaxLvl=474,  Island="Fountain City",    MobFolder="Enemies", MobName="Galley Pirate",    QuestName="FountainQuest",   QuestNum=2, NPCCFrame=CFrame.new(-779.8, 72.5, -3463.8)},
-    {Sea=1, MinLvl=475,  MaxLvl=524,  Island="Elegant Speedster", MobFolder="Enemies", MobName="Dark Master",     QuestName="DarkMasterQuest", QuestNum=1, NPCCFrame=CFrame.new(-1463, 92, 3846)},
-    {Sea=1, MinLvl=525,  MaxLvl=624,  Island="Cafe",             MobFolder="Enemies", MobName="Assassin",         QuestName="AssassinQuest",   QuestNum=1, NPCCFrame=CFrame.new(3581.2, 33.8, 3281.6)},
-    {Sea=2, MinLvl=625,  MaxLvl=699,  Island="Kingdom of Rose",  MobFolder="Enemies", MobName="Factory Staff",    QuestName="RoseQuest",       QuestNum=1, NPCCFrame=CFrame.new(-324, 68, -1437.1)},
-    {Sea=2, MinLvl=700,  MaxLvl=774,  Island="Kingdom of Rose",  MobFolder="Enemies", MobName="Citizen",          QuestName="RoseQuest",       QuestNum=2, NPCCFrame=CFrame.new(-324, 68, -1437.1)},
-    {Sea=2, MinLvl=775,  MaxLvl=849,  Island="Green Zone",       MobFolder="Enemies", MobName="Saber Expert",     QuestName="GreenZoneQuest",  QuestNum=1, NPCCFrame=CFrame.new(-4900, 28, -1600)},
-    {Sea=2, MinLvl=850,  MaxLvl=924,  Island="Graveyard",        MobFolder="Enemies", MobName="Zombie",           QuestName="GraveyardQuest",  QuestNum=1, NPCCFrame=CFrame.new(5212, 17, 3585)},
-    {Sea=2, MinLvl=925,  MaxLvl=999,  Island="Snow Mountain",    MobFolder="Enemies", MobName="Snow Lurker",      QuestName="SnowMtnQuest",    QuestNum=1, NPCCFrame=CFrame.new(-4000, 487, 4200)},
-    {Sea=2, MinLvl=1000, MaxLvl=1049, Island="Hot and Cold",     MobFolder="Enemies", MobName="Snow Demon",       QuestName="HotColdQuest",    QuestNum=1, NPCCFrame=CFrame.new(-2090, 96, -2505)},
-    {Sea=2, MinLvl=1050, MaxLvl=1099, Island="Hot and Cold",     MobFolder="Enemies", MobName="Ice Demon",        QuestName="HotColdQuest",    QuestNum=2, NPCCFrame=CFrame.new(-2090, 96, -2505)},
-    {Sea=2, MinLvl=1100, MaxLvl=1174, Island="Cursed Ship",      MobFolder="Enemies", MobName="Ship Deckhand",    QuestName="CursedShipQuest", QuestNum=1, NPCCFrame=CFrame.new(-4900, 28, 830)},
-    {Sea=2, MinLvl=1175, MaxLvl=1249, Island="Ice Castle",       MobFolder="Enemies", MobName="Ice Cream Staff",  QuestName="IceCastleQuest",  QuestNum=1, NPCCFrame=CFrame.new(550, 207, -5400)},
-    {Sea=2, MinLvl=1250, MaxLvl=1349, Island="Forgotten Island", MobFolder="Enemies", MobName="Diablo",           QuestName="ForgottenQuest",  QuestNum=1, NPCCFrame=CFrame.new(1500, 16, -2770)},
-    {Sea=2, MinLvl=1350, MaxLvl=1474, Island="Labyrinth",        MobFolder="Enemies", MobName="Labyrinth Monster",QuestName="LabyrinthQuest",  QuestNum=1, NPCCFrame=CFrame.new(-5680, 285, -970)},
-    {Sea=2, MinLvl=1475, MaxLvl=1574, Island="Labyrinth",        MobFolder="Enemies", MobName="Labyrinth Monster",QuestName="LabyrinthQuest",  QuestNum=2, NPCCFrame=CFrame.new(-5680, 285, -970)},
-    {Sea=3, MinLvl=1575, MaxLvl=1674, Island="Port Town",        MobFolder="Enemies", MobName="Marine Lieutnant", QuestName="PortTownQuest",   QuestNum=1, NPCCFrame=CFrame.new(-4033, 35, -1714)},
-    {Sea=3, MinLvl=1675, MaxLvl=1774, Island="Hydra Island",     MobFolder="Enemies", MobName="Giant Squid",      QuestName="HydraQuest",      QuestNum=1, NPCCFrame=CFrame.new(1299, 70, 1040)},
-    {Sea=3, MinLvl=1775, MaxLvl=1874, Island="Great Tree",       MobFolder="Enemies", MobName="Forest Pirate",    QuestName="GreatTreeQuest",  QuestNum=1, NPCCFrame=CFrame.new(576, 85, -5900)},
-    {Sea=3, MinLvl=1875, MaxLvl=1974, Island="Floating Turtle",  MobFolder="Enemies", MobName="Fishman Pirate",   QuestName="TurtleQuest",     QuestNum=1, NPCCFrame=CFrame.new(-3345, 483, 5710)},
-    {Sea=3, MinLvl=1975, MaxLvl=2074, Island="Floating Turtle",  MobFolder="Enemies", MobName="Mythological Pirate",QuestName="TurtleQuest",   QuestNum=2, NPCCFrame=CFrame.new(-3345, 483, 5710)},
-    {Sea=3, MinLvl=2075, MaxLvl=2199, Island="Haunted Castle",   MobFolder="Enemies", MobName="Reborn Skeleton",  QuestName="HauntedQuest",    QuestNum=1, NPCCFrame=CFrame.new(5900, 1000, -700)},
-    {Sea=3, MinLvl=2200, MaxLvl=2374, Island="Sea of Treats",    MobFolder="Enemies", MobName="Cookie Crafter",   QuestName="TreatsQuest",     QuestNum=1, NPCCFrame=CFrame.new(-2200, 57, -5500)},
-    {Sea=3, MinLvl=2375, MaxLvl=2524, Island="Sea of Treats",    MobFolder="Enemies", MobName="Cake Guard",       QuestName="TreatsQuest",     QuestNum=2, NPCCFrame=CFrame.new(-2200, 57, -5500)},
-    {Sea=3, MinLvl=2525, MaxLvl=2674, Island="Tiki Outpost",     MobFolder="Enemies", MobName="Tiki Outpost Guard",QuestName="TikiQuest",      QuestNum=1, NPCCFrame=CFrame.new(3500, 10, 5400)},
-    {Sea=3, MinLvl=2675, MaxLvl=2799, Island="Tiki Outpost",     MobFolder="Enemies", MobName="Tiki Outpost Guard",QuestName="TikiQuest",      QuestNum=2, NPCCFrame=CFrame.new(3500, 10, 5400)},
-    {Sea=3, MinLvl=2800, MaxLvl=2999, Island="Mirage Island",    MobFolder="Enemies", MobName="Demonic Soul",     QuestName="MirageQuest",     QuestNum=1, NPCCFrame=CFrame.new(-2800, 34, 3050)},
-    {Sea=3, MinLvl=3000, MaxLvl=9999, Island="Mirage Island",    MobFolder="Enemies", MobName="Demonic Soul",     QuestName="MirageQuest",     QuestNum=2, NPCCFrame=CFrame.new(-2800, 34, 3050)},
+    {Sea=1,MinLvl=1,    MaxLvl=9,    Island="Starter Island",   MobFolder="Enemies",MobName="Bandit",             QuestName="BanditQuest",     QuestNum=1,NPCCFrame=CFrame.new(977.8,6.4,1574.1)},
+    {Sea=1,MinLvl=10,   MaxLvl=14,   Island="Jungle",           MobFolder="Enemies",MobName="Monkey",             QuestName="JungleQuest",     QuestNum=1,NPCCFrame=CFrame.new(-1600,36,153)},
+    {Sea=1,MinLvl=15,   MaxLvl=29,   Island="Jungle",           MobFolder="Enemies",MobName="Gorilla",            QuestName="JungleQuest",     QuestNum=2,NPCCFrame=CFrame.new(-1600,36,153)},
+    {Sea=1,MinLvl=30,   MaxLvl=59,   Island="Pirate Village",   MobFolder="Enemies",MobName="Pirate",             QuestName="PirateQuest",     QuestNum=1,NPCCFrame=CFrame.new(-1142.2,4,3828.9)},
+    {Sea=1,MinLvl=60,   MaxLvl=89,   Island="Desert",           MobFolder="Enemies",MobName="Desert Bandit",      QuestName="DesertQuest",     QuestNum=1,NPCCFrame=CFrame.new(924.5,5.5,4446.3)},
+    {Sea=1,MinLvl=90,   MaxLvl=119,  Island="Frozen Village",   MobFolder="Enemies",MobName="Snow Bandit",        QuestName="SnowQuest",       QuestNum=1,NPCCFrame=CFrame.new(-1332,5,-3050)},
+    {Sea=1,MinLvl=120,  MaxLvl=149,  Island="Marine Fortress",  MobFolder="Enemies",MobName="Marine",             QuestName="MarineQuest",     QuestNum=1,NPCCFrame=CFrame.new(4240,33,716)},
+    {Sea=1,MinLvl=150,  MaxLvl=174,  Island="Skylands",         MobFolder="Enemies",MobName="Sky Bandit",         QuestName="SkyQuest",        QuestNum=1,NPCCFrame=CFrame.new(498,858,-1301)},
+    {Sea=1,MinLvl=175,  MaxLvl=209,  Island="Prison",           MobFolder="Enemies",MobName="Prisoner",           QuestName="PrisonQuest",     QuestNum=1,NPCCFrame=CFrame.new(27,73,-3312)},
+    {Sea=1,MinLvl=210,  MaxLvl=249,  Island="Colosseum",        MobFolder="Enemies",MobName="Toga Warrior",       QuestName="ColosseumQuest",  QuestNum=1,NPCCFrame=CFrame.new(-2027,7,-3009)},
+    {Sea=1,MinLvl=250,  MaxLvl=299,  Island="Magma Village",    MobFolder="Enemies",MobName="Magma Ninja",        QuestName="MagmaQuest",      QuestNum=1,NPCCFrame=CFrame.new(450,126,-4800)},
+    {Sea=1,MinLvl=300,  MaxLvl=374,  Island="Upper Skylands",   MobFolder="Enemies",MobName="Sky Pirate",         QuestName="UpperSkyQuest",   QuestNum=1,NPCCFrame=CFrame.new(-2418,1437,1887)},
+    {Sea=1,MinLvl=375,  MaxLvl=424,  Island="Fountain City",    MobFolder="Enemies",MobName="Galley Pirate",      QuestName="FountainQuest",   QuestNum=1,NPCCFrame=CFrame.new(-779.8,72.5,-3463.8)},
+    {Sea=1,MinLvl=425,  MaxLvl=474,  Island="Fountain City",    MobFolder="Enemies",MobName="Galley Pirate",      QuestName="FountainQuest",   QuestNum=2,NPCCFrame=CFrame.new(-779.8,72.5,-3463.8)},
+    {Sea=1,MinLvl=475,  MaxLvl=524,  Island="Elegant Speedster",MobFolder="Enemies",MobName="Dark Master",        QuestName="DarkMasterQuest", QuestNum=1,NPCCFrame=CFrame.new(-1463,92,3846)},
+    {Sea=1,MinLvl=525,  MaxLvl=624,  Island="Cafe",             MobFolder="Enemies",MobName="Assassin",           QuestName="AssassinQuest",   QuestNum=1,NPCCFrame=CFrame.new(3581.2,33.8,3281.6)},
+    {Sea=2,MinLvl=625,  MaxLvl=699,  Island="Kingdom of Rose",  MobFolder="Enemies",MobName="Factory Staff",      QuestName="RoseQuest",       QuestNum=1,NPCCFrame=CFrame.new(-324,68,-1437.1)},
+    {Sea=2,MinLvl=700,  MaxLvl=774,  Island="Kingdom of Rose",  MobFolder="Enemies",MobName="Citizen",            QuestName="RoseQuest",       QuestNum=2,NPCCFrame=CFrame.new(-324,68,-1437.1)},
+    {Sea=2,MinLvl=775,  MaxLvl=849,  Island="Green Zone",       MobFolder="Enemies",MobName="Saber Expert",       QuestName="GreenZoneQuest",  QuestNum=1,NPCCFrame=CFrame.new(-4900,28,-1600)},
+    {Sea=2,MinLvl=850,  MaxLvl=924,  Island="Graveyard",        MobFolder="Enemies",MobName="Zombie",             QuestName="GraveyardQuest",  QuestNum=1,NPCCFrame=CFrame.new(5212,17,3585)},
+    {Sea=2,MinLvl=925,  MaxLvl=999,  Island="Snow Mountain",    MobFolder="Enemies",MobName="Snow Lurker",        QuestName="SnowMtnQuest",    QuestNum=1,NPCCFrame=CFrame.new(-4000,487,4200)},
+    {Sea=2,MinLvl=1000, MaxLvl=1049, Island="Hot and Cold",     MobFolder="Enemies",MobName="Snow Demon",         QuestName="HotColdQuest",    QuestNum=1,NPCCFrame=CFrame.new(-2090,96,-2505)},
+    {Sea=2,MinLvl=1050, MaxLvl=1099, Island="Hot and Cold",     MobFolder="Enemies",MobName="Ice Demon",          QuestName="HotColdQuest",    QuestNum=2,NPCCFrame=CFrame.new(-2090,96,-2505)},
+    {Sea=2,MinLvl=1100, MaxLvl=1174, Island="Cursed Ship",      MobFolder="Enemies",MobName="Ship Deckhand",      QuestName="CursedShipQuest", QuestNum=1,NPCCFrame=CFrame.new(-4900,28,830)},
+    {Sea=2,MinLvl=1175, MaxLvl=1249, Island="Ice Castle",       MobFolder="Enemies",MobName="Ice Cream Staff",    QuestName="IceCastleQuest",  QuestNum=1,NPCCFrame=CFrame.new(550,207,-5400)},
+    {Sea=2,MinLvl=1250, MaxLvl=1349, Island="Forgotten Island", MobFolder="Enemies",MobName="Diablo",             QuestName="ForgottenQuest",  QuestNum=1,NPCCFrame=CFrame.new(1500,16,-2770)},
+    {Sea=2,MinLvl=1350, MaxLvl=1474, Island="Labyrinth",        MobFolder="Enemies",MobName="Labyrinth Monster",  QuestName="LabyrinthQuest",  QuestNum=1,NPCCFrame=CFrame.new(-5680,285,-970)},
+    {Sea=2,MinLvl=1475, MaxLvl=1574, Island="Labyrinth",        MobFolder="Enemies",MobName="Labyrinth Monster",  QuestName="LabyrinthQuest",  QuestNum=2,NPCCFrame=CFrame.new(-5680,285,-970)},
+    {Sea=3,MinLvl=1575, MaxLvl=1674, Island="Port Town",        MobFolder="Enemies",MobName="Marine Lieutnant",   QuestName="PortTownQuest",   QuestNum=1,NPCCFrame=CFrame.new(-4033,35,-1714)},
+    {Sea=3,MinLvl=1675, MaxLvl=1774, Island="Hydra Island",     MobFolder="Enemies",MobName="Giant Squid",        QuestName="HydraQuest",      QuestNum=1,NPCCFrame=CFrame.new(1299,70,1040)},
+    {Sea=3,MinLvl=1775, MaxLvl=1874, Island="Great Tree",       MobFolder="Enemies",MobName="Forest Pirate",      QuestName="GreatTreeQuest",  QuestNum=1,NPCCFrame=CFrame.new(576,85,-5900)},
+    {Sea=3,MinLvl=1875, MaxLvl=1974, Island="Floating Turtle",  MobFolder="Enemies",MobName="Fishman Pirate",     QuestName="TurtleQuest",     QuestNum=1,NPCCFrame=CFrame.new(-3345,483,5710)},
+    {Sea=3,MinLvl=1975, MaxLvl=2074, Island="Floating Turtle",  MobFolder="Enemies",MobName="Mythological Pirate",QuestName="TurtleQuest",     QuestNum=2,NPCCFrame=CFrame.new(-3345,483,5710)},
+    {Sea=3,MinLvl=2075, MaxLvl=2199, Island="Haunted Castle",   MobFolder="Enemies",MobName="Reborn Skeleton",    QuestName="HauntedQuest",    QuestNum=1,NPCCFrame=CFrame.new(5900,1000,-700)},
+    {Sea=3,MinLvl=2200, MaxLvl=2374, Island="Sea of Treats",    MobFolder="Enemies",MobName="Cookie Crafter",     QuestName="TreatsQuest",     QuestNum=1,NPCCFrame=CFrame.new(-2200,57,-5500)},
+    {Sea=3,MinLvl=2375, MaxLvl=2524, Island="Sea of Treats",    MobFolder="Enemies",MobName="Cake Guard",         QuestName="TreatsQuest",     QuestNum=2,NPCCFrame=CFrame.new(-2200,57,-5500)},
+    {Sea=3,MinLvl=2525, MaxLvl=2674, Island="Tiki Outpost",     MobFolder="Enemies",MobName="Tiki Outpost Guard", QuestName="TikiQuest",       QuestNum=1,NPCCFrame=CFrame.new(3500,10,5400)},
+    {Sea=3,MinLvl=2675, MaxLvl=2799, Island="Tiki Outpost",     MobFolder="Enemies",MobName="Tiki Outpost Guard", QuestName="TikiQuest",       QuestNum=2,NPCCFrame=CFrame.new(3500,10,5400)},
+    {Sea=3,MinLvl=2800, MaxLvl=2999, Island="Mirage Island",    MobFolder="Enemies",MobName="Demonic Soul",       QuestName="MirageQuest",     QuestNum=1,NPCCFrame=CFrame.new(-2800,34,3050)},
+    {Sea=3,MinLvl=3000, MaxLvl=9999, Island="Mirage Island",    MobFolder="Enemies",MobName="Demonic Soul",       QuestName="MirageQuest",     QuestNum=2,NPCCFrame=CFrame.new(-2800,34,3050)},
 }
 
 local farmStatus = "Idle"
 
 local function GetFarmData()
-    local ok, level = pcall(function()
-        return LocalPlayer.Data.Level.Value
-    end)
-    if not ok then return nil end
+    local ok, level = pcall(function() return LocalPlayer.Data.Level.Value end)
+    if not ok then return nil, 0 end
     for _, data in ipairs(LevelDatabase) do
         if level >= data.MinLvl and level <= data.MaxLvl then
             return data, level
@@ -124,7 +117,6 @@ local function GetFarmData()
 end
 
 local noclipConn = nil
-local MIN_FLY_Y  = 80
 
 local function StartNoclip()
     if noclipConn then return end
@@ -132,13 +124,7 @@ local function StartNoclip()
         local char = LocalPlayer.Character
         if not char then return end
         for _, part in ipairs(char:GetDescendants()) do
-            if part:IsA("BasePart") then
-                part.CanCollide = false
-            end
-        end
-        local r = char:FindFirstChild("HumanoidRootPart")
-        if r and r.Position.Y < 5 then
-            r.CFrame = CFrame.new(r.Position.X, MIN_FLY_Y, r.Position.Z)
+            if part:IsA("BasePart") then part.CanCollide = false end
         end
     end)
 end
@@ -147,14 +133,24 @@ local function StopNoclip()
     if noclipConn then noclipConn:Disconnect() noclipConn = nil end
 end
 
+local function SetPlatformStand(state)
+    local char = LocalPlayer.Character
+    local hum  = char and char:FindFirstChildOfClass("Humanoid")
+    if hum then hum.PlatformStand = state end
+end
+
 local function FlyTo(targetCFrame, onDone)
     if currentFarmTween then
         currentFarmTween:Cancel()
         currentFarmTween = nil
     end
+
     local char = LocalPlayer.Character
     local root = char and char:FindFirstChild("HumanoidRootPart")
-    if not root then if onDone then onDone() end return end
+    if not root then
+        if onDone then onDone() end
+        return
+    end
 
     local destPos  = targetCFrame.Position
     local safeY    = math.max(destPos.Y, MIN_FLY_Y)
@@ -163,19 +159,28 @@ local function FlyTo(targetCFrame, onDone)
     if root.Position.Y < MIN_FLY_Y then
         root.CFrame = CFrame.new(root.Position.X, MIN_FLY_Y, root.Position.Z)
         task.wait(0.05)
+        char = LocalPlayer.Character
+        root = char and char:FindFirstChild("HumanoidRootPart")
+        if not root then if onDone then onDone() end return end
     end
 
-    local dist = (safeDest.Position - root.Position).Magnitude
-    local dur  = math.clamp(dist / CONFIG.FarmFlySpeed, 0.3, 12)
-    local info = TweenInfo.new(dur, Enum.EasingStyle.Linear)
+    SetPlatformStand(true)
+
+    local dist  = (safeDest.Position - root.Position).Magnitude
+    local dur   = math.clamp(dist / CONFIG.FarmFlySpeed, 0.3, 12)
+    local info  = TweenInfo.new(dur, Enum.EasingStyle.Linear)
     local tween = TweenService:Create(root, info, {CFrame = safeDest})
     currentFarmTween = tween
+
+    local fired = false
     tween.Completed:Connect(function(state)
+        if fired then return end
+        fired = true
         currentFarmTween = nil
-        if state == Enum.PlaybackState.Completed then
-            if onDone then onDone() end
-        end
+        SetPlatformStand(false)
+        if onDone then onDone() end
     end)
+
     tween:Play()
     return tween
 end
@@ -214,7 +219,8 @@ local function ExecuteAttack(mob)
     if not char:FindFirstChildOfClass("Tool") then
         local tool = LocalPlayer.Backpack:FindFirstChildOfClass("Tool")
         if tool then
-            char:FindFirstChild("Humanoid"):EquipTool(tool)
+            local hum = char:FindFirstChild("Humanoid")
+            if hum then hum:EquipTool(tool) end
             task.wait(0.1)
         end
     end
@@ -255,10 +261,10 @@ local waitSpawnTimer = 0
 
 local function StartFarm()
     if farmConn then farmConn:Disconnect() farmConn = nil end
-    farmState        = FARM_STATE.GO_QUEST
-    waitingFly       = false
-    waitSpawnTimer   = 0
-    farmStatus       = "Starting..."
+    farmState      = FARM_STATE.GO_QUEST
+    waitingFly     = false
+    waitSpawnTimer = 0
+    farmStatus     = "Starting..."
 
     farmConn = RunService.Heartbeat:Connect(function(dt)
         if not CONFIG.Mode9 then return end
@@ -270,19 +276,19 @@ local function StartFarm()
 
         local farmData, level = GetFarmData()
         if not farmData then
-            farmStatus = "No data for level " .. tostring(level)
+            farmStatus = "Level " .. tostring(level) .. " tidak ada di database"
             return
         end
 
         if farmState == FARM_STATE.GO_QUEST then
             if HasActiveQuest() then
                 farmState  = FARM_STATE.GO_MOB
-                farmStatus = "Quest active — hunting"
+                farmStatus = "Quest aktif — hunting"
                 return
             end
             local dist = (farmData.NPCCFrame.Position - root.Position).Magnitude
             if dist > 20 then
-                farmStatus = "Flying to quest NPC..."
+                farmStatus = "Terbang ke NPC quest..."
                 waitingFly = true
                 FlyTo(farmData.NPCCFrame, function()
                     waitingFly = false
@@ -313,13 +319,13 @@ local function StartFarm()
             if HasActiveQuest() then
                 farmState = FARM_STATE.GO_MOB
             else
-                farmStatus = "Quest gagal, coba lagi..."
+                farmStatus = "Quest gagal, retry..."
             end
 
         elseif farmState == FARM_STATE.GO_MOB then
             if not HasActiveQuest() then
                 farmState  = FARM_STATE.GO_QUEST
-                farmStatus = "Quest selesai — ambil quest baru"
+                farmStatus = "Quest selesai — ambil baru"
                 return
             end
             local mob = FindNearestMob(farmData.MobName, farmData.MobFolder)
@@ -338,10 +344,6 @@ local function StartFarm()
             local dist    = (hoverCF.Position - root.Position).Magnitude
 
             if dist > 8 then
-                if currentFarmTween then
-                    currentFarmTween:Cancel()
-                    currentFarmTween = nil
-                end
                 farmStatus = "Terbang ke " .. farmData.MobName .. "..."
                 waitingFly = true
                 FlyTo(hoverCF, function()
@@ -355,7 +357,7 @@ local function StartFarm()
         elseif farmState == FARM_STATE.ATTACK then
             if not HasActiveQuest() then
                 farmState  = FARM_STATE.GO_QUEST
-                farmStatus = "Quest selesai — ambil quest baru"
+                farmStatus = "Quest selesai — ambil baru"
                 return
             end
             local mob = FindNearestMob(farmData.MobName, farmData.MobFolder)
@@ -388,6 +390,7 @@ end
 local function StopFarm()
     if farmConn then farmConn:Disconnect() farmConn = nil end
     if currentFarmTween then currentFarmTween:Cancel() currentFarmTween = nil end
+    SetPlatformStand(false)
     StopNoclip()
     farmState      = FARM_STATE.IDLE
     farmStatus     = "Idle"
@@ -415,10 +418,7 @@ local function GetSilentTarget()
         local dx   = screen.X - cx
         local dy   = screen.Y - cy
         local dist = math.sqrt(dx*dx + dy*dy)
-        if dist < fov and dist < bestDist then
-            bestDist = dist
-            best     = root
-        end
+        if dist < fov and dist < bestDist then bestDist = dist best = root end
     end
     return best
 end
@@ -535,9 +535,7 @@ end
 
 UserInputService.InputBegan:Connect(function(input, gp)
     if gp then return end
-    if input.KeyCode == Enum.KeyCode.Q and CONFIG.Mode6 then
-        dashHolding = true
-    end
+    if input.KeyCode == Enum.KeyCode.Q and CONFIG.Mode6 then dashHolding = true end
 end)
 UserInputService.InputEnded:Connect(function(input)
     if input.KeyCode == Enum.KeyCode.Q then dashHolding = false end
@@ -686,9 +684,7 @@ UserInputService.InputChanged:Connect(function(input)
     end
 end)
 UserInputService.InputEnded:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 then
-        draggingWindow = false
-    end
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then draggingWindow = false end
 end)
 
 local titleAccentLine = Instance.new("Frame", titleBar)
@@ -940,40 +936,32 @@ local combatPage = MakePage(); pages["combat"] = combatPage
 local combatBtn  = MakeSidebarBtn("⚔", "Combat", "combat")
 
 MakeSectionLabel(combatPage, "HITBOX")
-local _, hbGet, _     = MakeToggleRow(combatPage, "Hitbox Expand", "Expand LocalRoot hitbox size")
-MakeSliderRow(combatPage, "Hitbox Size", 1, 100, 0.0, "%", function(val)
-    CONFIG.HitboxPercent = val
-end)
+local _, hbGet, _      = MakeToggleRow(combatPage, "Hitbox Expand", "Expand LocalRoot hitbox size")
+MakeSliderRow(combatPage, "Hitbox Size", 1, 100, 0.0, "%", function(val) CONFIG.HitboxPercent = val end)
 
 MakeSectionLabel(combatPage, "COMBAT")
-local _, hbSpamGet, _ = MakeToggleRow(combatPage, "Hitbox Spam", "Spawn hitbox parts at position")
-local _, dashGet, _   = MakeToggleRow(combatPage, "Dash Spam",   "Hold Q — auto dash no delay")
+local _, hbSpamGet, _  = MakeToggleRow(combatPage, "Hitbox Spam",  "Spawn hitbox parts at position")
+local _, dashGet, _    = MakeToggleRow(combatPage, "Dash Spam",    "Hold Q — auto dash no delay")
 
 MakeSectionLabel(combatPage, "SILENT AIM")
-local _, silentGet, _ = MakeToggleRow(combatPage, "Silent Aim",
-    "Kamera redirect ke target — semua jurus kena")
-MakeSliderRow(combatPage, "Silent Aim FOV", 30, 300,
-    (CONFIG.SilentAimFOV - 30) / 270, " px",
-    function(val)
-        CONFIG.SilentAimFOV = val
-        fovCircle.Radius    = val
-    end)
+local _, silentGet, _  = MakeToggleRow(combatPage, "Silent Aim",   "Kamera redirect ke target — semua jurus kena")
+MakeSliderRow(combatPage, "Silent Aim FOV", 30, 300, (CONFIG.SilentAimFOV-30)/270, " px", function(val)
+    CONFIG.SilentAimFOV = val
+    fovCircle.Radius    = val
+end)
 
 MakeSectionLabel(combatPage, "FAST ATTACK")
-local _, fastAtkGet, _ = MakeToggleRow(combatPage, "Fast Attack",
-    "FireServer RegisterAttack tanpa delay animasi")
-MakeSliderRow(combatPage, "Attack HPS", 1, 30,
-    (CONFIG.AttackHPS - 1) / 29, " HPS",
-    function(val) CONFIG.AttackHPS = val end)
+local _, fastAtkGet, _ = MakeToggleRow(combatPage, "Fast Attack",  "FireServer RegisterAttack tanpa delay animasi")
+MakeSliderRow(combatPage, "Attack HPS", 1, 30, (CONFIG.AttackHPS-1)/29, " HPS", function(val) CONFIG.AttackHPS = val end)
 
 local visualPage = MakePage(); pages["visual"] = visualPage
 local visualBtn  = MakeSidebarBtn("👁", "Visual", "visual")
 MakeSectionLabel(visualPage, "ESP")
-local _, espGet, _    = MakeToggleRow(visualPage, "ESP",     "Player boxes, health, distance")
-local _, tracerGet, _ = MakeToggleRow(visualPage, "Tracers", "Lines from screen to players")
+local _, espGet, _     = MakeToggleRow(visualPage, "ESP",     "Player boxes, health, distance")
+local _, tracerGet, _  = MakeToggleRow(visualPage, "Tracers", "Lines from screen to players")
 
-local movePage    = MakePage(); pages["movement"] = movePage
-local moveBtn     = MakeSidebarBtn("🏃", "Movement", "movement")
+local movePage  = MakePage(); pages["movement"] = movePage
+local moveBtn   = MakeSidebarBtn("🏃", "Movement", "movement")
 MakeSectionLabel(movePage, "SPEED")
 local _, speedGet, _ = MakeToggleRow(movePage, "Fast Run", "Override WalkSpeed every frame")
 MakeSliderRow(movePage, "Speed", BASE_SPEED, MAX_SPEED, 0.5, " ws", function(val, pct)
@@ -1026,41 +1014,35 @@ local _, farmGet, farmSet = MakeToggleRow(farmPage, "Auto Farm",
     "Detect level → fly ke NPC → quest → hover attack", REDZ.Green)
 
 MakeSectionLabel(farmPage, "SETTINGS")
-local _, noclipGet, _ = MakeToggleRow(farmPage, "Noclip",
-    "CanCollide = false saat farm aktif")
+local _, noclipGet, _ = MakeToggleRow(farmPage, "Noclip", "CanCollide = false saat farm aktif")
 
-MakeSliderRow(farmPage, "Fly Speed", 50, 700,
-    (CONFIG.FarmFlySpeed - 50) / 650, " stud/s",
+MakeSliderRow(farmPage, "Fly Speed", 50, 700, (CONFIG.FarmFlySpeed-50)/650, " stud/s",
     function(val) CONFIG.FarmFlySpeed = val end)
 
-MakeSliderRow(farmPage, "Hover Height", 2, 20,
-    (CONFIG.FarmHoverHeight - 2) / 18, " stud",
+MakeSliderRow(farmPage, "Hover Height", 2, 20, (CONFIG.FarmHoverHeight-2)/18, " stud",
     function(val) CONFIG.FarmHoverHeight = val end)
 
 RunService.Heartbeat:Connect(function()
-    local _, level = GetFarmData()
-    local farmData = GetFarmData()
-
+    local farmData, level = GetFarmData()
     if CONFIG.Mode9 then
-        statusIcon.TextColor3  = REDZ.Green
-        statusIcon.Text        = "●"
-        statusTitle.TextColor3 = REDZ.Green
+        statusIcon.TextColor3       = REDZ.Green
+        statusIcon.Text             = "●"
+        statusTitle.TextColor3      = REDZ.Green
         statusCard.BackgroundColor3 = Color3.fromRGB(12, 22, 14)
-        statusStroke.Color     = REDZ.GreenDim
+        statusStroke.Color          = REDZ.GreenDim
     else
-        statusIcon.TextColor3  = REDZ.TextSub
-        statusIcon.Text        = "○"
-        statusTitle.TextColor3 = REDZ.TextSub
+        statusIcon.TextColor3       = REDZ.TextSub
+        statusIcon.Text             = "○"
+        statusTitle.TextColor3      = REDZ.TextSub
         statusCard.BackgroundColor3 = REDZ.BG2
-        statusStroke.Color     = REDZ.Stroke
+        statusStroke.Color          = REDZ.Stroke
     end
     statusText.Text = farmStatus
-
     if farmData then
         levelText.Text = ("Lv %d  |  Sea %d  |  %s  |  Target: %s  [Lv %d-%d]"):format(
             level or 0, farmData.Sea or 1, farmData.Island, farmData.MobName, farmData.MinLvl, farmData.MaxLvl)
     else
-        levelText.Text = ("Lv %d  |  Data tidak ditemukan di database"):format(level or 0)
+        levelText.Text = ("Lv %d  |  Data tidak ditemukan"):format(level or 0)
     end
 end)
 
@@ -1070,8 +1052,7 @@ local function WireToggle(getter, configKey, onEnable, onDisable)
         if CONFIG[configKey] ~= s then
             CONFIG[configKey] = s
             if s then if onEnable  then onEnable()  end
-            else      if onDisable then onDisable()  end
-            end
+            else      if onDisable then onDisable()  end end
         end
     end)
 end
@@ -1082,9 +1063,7 @@ WireToggle(espGet,     "Mode3", nil, HideAllESP)
 WireToggle(tracerGet,  "Mode4", nil, function()
     for _, esp in pairs(ESP_Objects) do esp.Line.Visible = false end
 end)
-WireToggle(speedGet,   "Mode5", nil, function()
-    LocalHumanoid.WalkSpeed = BASE_SPEED
-end)
+WireToggle(speedGet,   "Mode5", nil, function() LocalHumanoid.WalkSpeed = BASE_SPEED end)
 WireToggle(dashGet,    "Mode6", StartDashLoop, StopDashLoop)
 WireToggle(silentGet,  "Mode7", nil, function()
     silentTarget = nil
@@ -1092,17 +1071,9 @@ WireToggle(silentGet,  "Mode7", nil, function()
 end)
 WireToggle(fastAtkGet, "Mode8", StartFastAttack, StopFastAttack)
 WireToggle(farmGet,    "Mode9",
-    function()
-        StartNoclip()
-        StartFarm()
-        farmStatus = "Starting..."
-    end,
-    function()
-        StopFarm()
-        farmStatus = "Idle"
-    end
+    function() StartNoclip() StartFarm() farmStatus = "Starting..." end,
+    function() StopFarm() farmStatus = "Idle" end
 )
-
 WireToggle(noclipGet, "Mode9",
     function() if not CONFIG.Mode9 then StartNoclip() end end,
     function() if not CONFIG.Mode9 then StopNoclip()  end end
@@ -1145,7 +1116,6 @@ RunService.RenderStepped:Connect(function()
     if CONFIG.Mode1 then ExpandHitbox() end
     if CONFIG.Mode2 and LocalRoot then Mode2Func(LocalRoot.Position) end
     if CONFIG.Mode5 then LocalHumanoid.WalkSpeed = GetTargetSpeed() end
-
     if CONFIG.Mode7 then
         ApplySilentAim()
         local vp = Camera.ViewportSize
@@ -1155,6 +1125,5 @@ RunService.RenderStepped:Connect(function()
     else
         fovCircle.Visible = false
     end
-
     RenderESP()
 end)
