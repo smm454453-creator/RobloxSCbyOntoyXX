@@ -31,6 +31,8 @@ local MIN_HITBOX    = 4
 local MAX_HITBOX    = 80
 local DASH_INTERVAL = 0.08
 local MIN_FLY_Y     = 80
+local QUEST_RADIUS  = 45      -- [FIX 1] dari 15/30 → 45, covers panggung atas
+local QUEST_TIMEOUT = 3.5     -- [FIX 3] detik max di TAKE_QUEST sebelum fallback
 
 local OriginalLocalSize = nil
 local ESP_Objects       = {}
@@ -61,7 +63,6 @@ task.spawn(function()
 	end)
 end)
 
--- FIX: koordinat Tiki Outpost dibenerin, dari (3500,10,5400) laut lepas -> (-16550,55,-14.5)
 local LevelDatabase = {
 	{Sea=1,MinLvl=1,    MaxLvl=9,    Island="Starter Island",   MobFolder="Enemies",MobName="Bandit",             QuestName="BanditQuest",     QuestNum=1,NPCCFrame=CFrame.new(977.8,6.4,1574.1)},
 	{Sea=1,MinLvl=10,   MaxLvl=14,   Island="Jungle",           MobFolder="Enemies",MobName="Monkey",             QuestName="JungleQuest",     QuestNum=1,NPCCFrame=CFrame.new(-1600,36,153)},
@@ -99,8 +100,9 @@ local LevelDatabase = {
 	{Sea=3,MinLvl=2075, MaxLvl=2199, Island="Haunted Castle",   MobFolder="Enemies",MobName="Reborn Skeleton",    QuestName="HauntedQuest",    QuestNum=1,NPCCFrame=CFrame.new(5900,1000,-700)},
 	{Sea=3,MinLvl=2200, MaxLvl=2374, Island="Sea of Treats",    MobFolder="Enemies",MobName="Cookie Crafter",     QuestName="TreatsQuest",     QuestNum=1,NPCCFrame=CFrame.new(-2200,57,-5500)},
 	{Sea=3,MinLvl=2375, MaxLvl=2524, Island="Sea of Treats",    MobFolder="Enemies",MobName="Cake Guard",         QuestName="TreatsQuest",     QuestNum=2,NPCCFrame=CFrame.new(-2200,57,-5500)},
-	{Sea=3,MinLvl=2525, MaxLvl=2674, Island="Tiki Outpost",     MobFolder="Enemies",MobName="Tiki Outpost Guard", QuestName="TikiQuest",       QuestNum=1,NPCCFrame=CFrame.new(-16550,55,-14.5)},
-	{Sea=3,MinLvl=2675, MaxLvl=2799, Island="Tiki Outpost",     MobFolder="Enemies",MobName="Tiki Outpost Guard", QuestName="TikiQuest",       QuestNum=2,NPCCFrame=CFrame.new(-16550,55,-14.5)},
+	-- [FIX 4] QuestName valid: "TikiQuest" dengan QuestNum 1 dan 2, Y=85 bukan 55 (panggung atas)
+	{Sea=3,MinLvl=2525, MaxLvl=2674, Island="Tiki Outpost",     MobFolder="Enemies",MobName="Tiki Outpost Guard", QuestName="TikiQuest",       QuestNum=1,NPCCFrame=CFrame.new(-16550,85,-14.5)},
+	{Sea=3,MinLvl=2675, MaxLvl=2799, Island="Tiki Outpost",     MobFolder="Enemies",MobName="Tiki Outpost Guard", QuestName="TikiQuest",       QuestNum=2,NPCCFrame=CFrame.new(-16550,85,-14.5)},
 	{Sea=3,MinLvl=2800, MaxLvl=2999, Island="Mirage Island",    MobFolder="Enemies",MobName="Demonic Soul",       QuestName="MirageQuest",     QuestNum=1,NPCCFrame=CFrame.new(-2800,34,3050)},
 	{Sea=3,MinLvl=3000, MaxLvl=9999, Island="Mirage Island",    MobFolder="Enemies",MobName="Demonic Soul",       QuestName="MirageQuest",     QuestNum=2,NPCCFrame=CFrame.new(-2800,34,3050)},
 }
@@ -118,7 +120,6 @@ local function GetFarmData()
 	return nil, level
 end
 
--- Dynamic NPC finder: scan workspace dulu, fallback ke database kalau nil
 local NPCCFrameCache = {}
 local NPC_CACHE_TTL = 3
 
@@ -164,6 +165,7 @@ local function GetNPCCFrame(farmData)
 		return cached.cframe
 	end
 
+	-- [FIX 2] dynamic scan prioritas PrimaryPart, bukan BasePart sembarang
 	local dynamicCFrame = ScanForNPC(farmData.Island)
 	local finalCFrame = dynamicCFrame or farmData.NPCCFrame
 
@@ -323,10 +325,11 @@ local FARM_STATE = {
 	WAIT_SPAWN = "wait_spawn",
 }
 
-local farmState      = FARM_STATE.IDLE
-local waitingFly     = false
-local waitSpawnTimer = 0
-local charWaitTimer  = 0
+local farmState       = FARM_STATE.IDLE
+local waitingFly      = false
+local waitSpawnTimer  = 0
+local charWaitTimer   = 0
+local questStuckTimer = 0   -- [FIX 3] timer fallback
 
 local function StartFarm()
 	if farmConn then farmConn:Disconnect() farmConn = nil end
@@ -334,6 +337,7 @@ local function StartFarm()
 	farmState      = FARM_STATE.GO_QUEST
 	waitingFly     = false
 	waitSpawnTimer = 0
+	questStuckTimer = 0
 	farmStatus     = "Starting..."
 
 	farmConn = RunService.Heartbeat:Connect(function(dt)
@@ -344,12 +348,11 @@ local function StartFarm()
 		local root = char and char:FindFirstChild("HumanoidRootPart")
 		local hum  = char and char:FindFirstChildOfClass("Humanoid")
 
-		-- FIX: kalau mati/respawn, masuk state nunggu, bukan langsung return diam-diam
 		if not char or not root or not hum or hum.Health <= 0 then
 			if currentFarmTween then currentFarmTween:Cancel() currentFarmTween = nil end
-			farmState  = FARM_STATE.WAIT_CHAR
+			farmState     = FARM_STATE.WAIT_CHAR
 			charWaitTimer = 0
-			farmStatus = "Menunggu respawn..."
+			farmStatus    = "Menunggu respawn..."
 			return
 		end
 
@@ -370,6 +373,7 @@ local function StartFarm()
 		local npcCFrame = GetNPCCFrame(farmData)
 
 		if farmState == FARM_STATE.GO_QUEST then
+			questStuckTimer = 0
 			if HasActiveQuest() then
 				farmState  = FARM_STATE.GO_MOB
 				farmStatus = "Quest aktif — hunting"
@@ -380,7 +384,7 @@ local function StartFarm()
 				return
 			end
 			local dist = (npcCFrame.Position - root.Position).Magnitude
-			if dist > 20 then
+			if dist > QUEST_RADIUS then
 				farmStatus = "Terbang ke NPC quest..."
 				waitingFly = true
 				FlyTo(npcCFrame, function()
@@ -393,16 +397,40 @@ local function StartFarm()
 
 		elseif farmState == FARM_STATE.TAKE_QUEST then
 			if HasActiveQuest() then
-				farmState  = FARM_STATE.GO_MOB
-				farmStatus = "Quest diterima!"
+				farmState       = FARM_STATE.GO_MOB
+				questStuckTimer = 0
+				farmStatus      = "Quest diterima!"
 				return
 			end
+
+			-- [FIX 3] fallback: kalau mob udah ada di sekitar, skip quest — langsung attack
+			local nearbyMob = FindNearestMob(farmData.MobName, farmData.MobFolder)
+			if nearbyMob then
+				local mr = nearbyMob:FindFirstChild("HumanoidRootPart")
+				if mr and (mr.Position - root.Position).Magnitude < 80 then
+					questStuckTimer = questStuckTimer + dt
+					if questStuckTimer >= QUEST_TIMEOUT then
+						questStuckTimer = 0
+						farmState       = FARM_STATE.GO_MOB
+						farmStatus      = "Quest timeout — mob ada, langsung attack"
+						return
+					end
+				end
+			end
+
 			if not npcCFrame then farmState = FARM_STATE.GO_QUEST return end
-			local npcDist = (npcCFrame.Position - root.Position).Magnitude
-			if npcDist > 30 then
-				farmState = FARM_STATE.GO_QUEST
+
+			-- [FIX 1] XZ distance check — ignore Y biar panggung atas gak bikin gagal
+			local npcXZ  = Vector2.new(npcCFrame.Position.X, npcCFrame.Position.Z)
+			local rootXZ = Vector2.new(root.Position.X, root.Position.Z)
+			local npcDist = (npcXZ - rootXZ).Magnitude
+
+			if npcDist > QUEST_RADIUS then
+				farmState       = FARM_STATE.GO_QUEST
+				questStuckTimer = 0
 				return
 			end
+
 			farmStatus = "Ambil quest: " .. farmData.QuestName
 			if CommF then
 				pcall(function()
@@ -411,12 +439,14 @@ local function StartFarm()
 			end
 			task.wait(0.8)
 			if HasActiveQuest() then
-				farmState = FARM_STATE.GO_MOB
+				farmState       = FARM_STATE.GO_MOB
+				questStuckTimer = 0
 			else
 				farmStatus = "Quest gagal, retry..."
 			end
 
 		elseif farmState == FARM_STATE.GO_MOB then
+			questStuckTimer = 0
 			if not HasActiveQuest() then
 				farmState  = FARM_STATE.GO_QUEST
 				farmStatus = "Quest selesai — ambil baru"
@@ -450,6 +480,7 @@ local function StartFarm()
 			end
 
 		elseif farmState == FARM_STATE.ATTACK then
+			questStuckTimer = 0
 			if not HasActiveQuest() then
 				farmState  = FARM_STATE.GO_QUEST
 				farmStatus = "Quest selesai — ambil baru"
@@ -497,10 +528,11 @@ local function StopFarm()
 	if not CONFIG.Mode10 then
 		if noclipConn then noclipConn:Disconnect() noclipConn = nil end
 	end
-	farmState      = FARM_STATE.IDLE
-	farmStatus     = "Idle"
-	waitingFly     = false
-	waitSpawnTimer = 0
+	farmState       = FARM_STATE.IDLE
+	farmStatus      = "Idle"
+	waitingFly      = false
+	waitSpawnTimer  = 0
+	questStuckTimer = 0
 end
 
 local silentTarget = nil
@@ -1234,10 +1266,11 @@ LocalPlayer.CharacterAdded:Connect(function(char)
 	if currentFarmTween then currentFarmTween:Cancel() currentFarmTween = nil end
 	waitingFly = false
 	if CONFIG.Mode9 then
-		farmState      = FARM_STATE.WAIT_CHAR
-		charWaitTimer  = 0
-		waitSpawnTimer = 0
-		farmStatus     = "Respawned — restarting"
+		farmState       = FARM_STATE.WAIT_CHAR
+		charWaitTimer   = 0
+		waitSpawnTimer  = 0
+		questStuckTimer = 0
+		farmStatus      = "Respawned — restarting"
 	end
 	if CONFIG.Mode5 then
 		local hum = char:FindFirstChildOfClass("Humanoid")
