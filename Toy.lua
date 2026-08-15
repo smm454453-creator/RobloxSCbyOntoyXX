@@ -15,6 +15,7 @@ local CONFIG = {
 	Mode1 = false, Mode2 = false, Mode3 = false,
 	Mode4 = false, Mode5 = false, Mode6 = false,
 	Mode7 = false, Mode8 = false, Mode9 = false,
+	Mode10 = false,
 	HitboxPercent   = 1,
 	SpeedPercent    = 50,
 	Radius          = 15,
@@ -130,6 +131,7 @@ local function StartNoclip()
 end
 
 local function StopNoclip()
+	if CONFIG.Mode9 or CONFIG.Mode10 then return end
 	if noclipConn then noclipConn:Disconnect() noclipConn = nil end
 end
 
@@ -200,8 +202,9 @@ local function FindNearestMob(mobName, mobFolder)
 	local folder = Workspace:FindFirstChild(mobFolder or "Enemies")
 	if not folder then return nil end
 	local best, bestDist = nil, math.huge
+	local lowerTarget = string.lower(mobName)
 	for _, mob in ipairs(folder:GetChildren()) do
-		if mob.Name == mobName then
+		if string.find(string.lower(mob.Name), lowerTarget, 1, true) then
 			local hum = mob:FindFirstChild("Humanoid")
 			local mr  = mob:FindFirstChild("HumanoidRootPart")
 			if hum and mr and hum.Health > 0 then
@@ -1081,9 +1084,9 @@ WireToggle(farmGet,    "Mode9",
 	function() StartNoclip() StartFarm() farmStatus = "Starting..." end,
 	function() StopFarm() farmStatus = "Idle" end
 )
-WireToggle(noclipGet, "Mode9",
-	function() if not CONFIG.Mode9 then StartNoclip() end end,
-	function() if not CONFIG.Mode9 then StopNoclip()  end end
+WireToggle(noclipGet, "Mode10",
+	function() StartNoclip() end,
+	function() StopNoclip() end
 )
 
 combatBtn.MouseButton1Click:Connect(function() SetActivePage("combat")   end)
