@@ -32,8 +32,6 @@ local MAX_HITBOX    = 80
 local DASH_INTERVAL = 0.08
 local MIN_FLY_Y     = 80
 local QUEST_RADIUS  = 45
-local QUEST_TIMEOUT = 2.0      -- detik di NPC zone sebelum force GO_MOB
-local QUEST_COOLDOWN = 1.5     -- detik minimum antar pemanggilan StartQuest
 
 local OriginalLocalSize = nil
 local ESP_Objects       = {}
@@ -42,12 +40,10 @@ local dashHolding       = false
 local dashConn          = nil
 local fastAttackConn    = nil
 local lastAttackTick    = 0
-local farmConn          = nil
 local currentFarmTween  = nil
 
--- hover anchor state
-local hoverAnchorPos    = nil   -- Vector3, kalau non-nil root di-pin di sini tiap Heartbeat
-local hoverAnchorConn   = nil
+local hoverAnchorPos  = nil
+local hoverAnchorConn = nil
 
 local RegisterAttack = nil
 local CommF = nil
@@ -127,7 +123,7 @@ end
 local NPCCFrameCache = {}
 local NPC_CACHE_TTL  = 3
 
-local function ScanForNPC(islandHint)
+local function ScanForNPC()
 	local candidates = {"NPCs","QuestGivers","Quest","Island"}
 	local searchRoots = {}
 	for _, n in ipairs(candidates) do
@@ -161,7 +157,7 @@ local function GetNPCCFrame(farmData)
 	local cached = NPCCFrameCache[key]
 	local now    = tick()
 	if cached and (now - cached.time) < NPC_CACHE_TTL then return cached.cframe end
-	local dyn   = ScanForNPC(farmData.Island)
+	local dyn   = ScanForNPC()
 	local final = dyn or farmData.NPCCFrame
 	if final and final.Position ~= Vector3.zero then
 		NPCCFrameCache[key] = {cframe=final, time=now}
@@ -169,10 +165,6 @@ local function GetNPCCFrame(farmData)
 	end
 	return nil
 end
-
--- ── HOVER ANCHOR ──────────────────────────────────────────────────────────────
--- Pin root ke posisi tetap tiap Heartbeat selama farm aktif di NPC zone.
--- Solves: noclip + tween selesai = jatuh tembus map.
 
 local function StartHoverAnchor(pos)
 	if hoverAnchorConn then hoverAnchorConn:Disconnect() hoverAnchorConn = nil end
@@ -198,8 +190,6 @@ local function StopHoverAnchor()
 	if hoverAnchorConn then hoverAnchorConn:Disconnect() hoverAnchorConn = nil end
 end
 
--- ─────────────────────────────────────────────────────────────────────────────
-
 local noclipConn = nil
 
 local function StartNoclip()
@@ -211,6 +201,34 @@ local function StartNoclip()
 			if part:IsA("BasePart") then part.CanCollide = false end
 		end
 	end)
+end
+
+local function HasActiveQuest()
+	local ok, visible = pcall(function()
+		return LocalPlayer.PlayerGui.Main.Quest.Visible
+	end)
+	return ok and visible == true
+end
+
+local function FindNearestMob(mobName, mobFolder)
+	local char = LocalPlayer.Character
+	local root = char and char:FindFirstChild("HumanoidRootPart")
+	if not root then return nil end
+	local folder = Workspace:FindFirstChild(mobFolder or "Enemies")
+	if not folder then return nil end
+	local best, bestDist = nil, math.huge
+	local lower = string.lower(mobName)
+	for _, mob in ipairs(folder:GetChildren()) do
+		if string.find(string.lower(mob.Name), lower, 1, true) then
+			local hum = mob:FindFirstChild("Humanoid")
+			local mr  = mob:FindFirstChild("HumanoidRootPart")
+			if hum and mr and hum.Health > 0 then
+				local d = (mr.Position - root.Position).Magnitude
+				if d < bestDist then bestDist = d best = mob end
+			end
+		end
+	end
+	return best
 end
 
 local function FlyTo(targetCFrame, onDone)
@@ -245,37 +263,6 @@ local function FlyTo(targetCFrame, onDone)
 		if onDone then onDone() end
 	end)
 	tween:Play()
-	return tween
-end
-
-local function HasActiveQuest()
-	local gui  = LocalPlayer:FindFirstChild("PlayerGui")
-	if not gui then return false end
-	local main = gui:FindFirstChild("Main")
-	if not main then return false end
-	local q    = main:FindFirstChild("Quest")
-	return q and q.Visible
-end
-
-local function FindNearestMob(mobName, mobFolder)
-	local char = LocalPlayer.Character
-	local root = char and char:FindFirstChild("HumanoidRootPart")
-	if not root then return nil end
-	local folder = Workspace:FindFirstChild(mobFolder or "Enemies")
-	if not folder then return nil end
-	local best, bestDist = nil, math.huge
-	local lower = string.lower(mobName)
-	for _, mob in ipairs(folder:GetChildren()) do
-		if string.find(string.lower(mob.Name), lower, 1, true) then
-			local hum = mob:FindFirstChild("Humanoid")
-			local mr  = mob:FindFirstChild("HumanoidRootPart")
-			if hum and mr and hum.Health > 0 then
-				local d = (mr.Position - root.Position).Magnitude
-				if d < bestDist then bestDist = d best = mob end
-			end
-		end
-	end
-	return best
 end
 
 local function ExecuteAttack(mob)
@@ -286,7 +273,7 @@ local function ExecuteAttack(mob)
 		if tool then
 			local hum = char:FindFirstChild("Humanoid")
 			if hum then hum:EquipTool(tool) end
-			task.wait(0.1)
+			task.wait(0.15)
 		end
 	end
 	local tool = char:FindFirstChildOfClass("Tool")
@@ -306,186 +293,139 @@ local FARM_STATE = {
 	TAKE_QUEST="take_quest", GO_MOB="go_mob", ATTACK="attack", WAIT_SPAWN="wait_spawn",
 }
 
-local farmState       = FARM_STATE.IDLE
-local waitingFly      = false
-local waitSpawnTimer  = 0
-local charWaitTimer   = 0
-local questStuckTimer = 0
-local lastQuestCall   = 0   -- debounce timestamp untuk StartQuest remote
+local farmState   = FARM_STATE.IDLE
+local farmRunning = false
 
-local function StartFarm()
-	if farmConn then farmConn:Disconnect() farmConn = nil end
-	if currentFarmTween then currentFarmTween:Cancel() currentFarmTween = nil end
-	StopHoverAnchor()
-	farmState       = FARM_STATE.GO_QUEST
-	waitingFly      = false
-	waitSpawnTimer  = 0
-	questStuckTimer = 0
-	lastQuestCall   = 0
-	farmStatus      = "Starting..."
+local function FarmLoop()
+	farmState  = FARM_STATE.GO_QUEST
+	farmStatus = "Starting..."
 
-	farmConn = RunService.Heartbeat:Connect(function(dt)
-		if not CONFIG.Mode9 then return end
-		if waitingFly then return end
+	while farmRunning do
+		task.wait(0.1)
 
 		local char = LocalPlayer.Character
 		local root = char and char:FindFirstChild("HumanoidRootPart")
 		local hum  = char and char:FindFirstChildOfClass("Humanoid")
 
 		if not char or not root or not hum or hum.Health <= 0 then
-			if currentFarmTween then currentFarmTween:Cancel() currentFarmTween = nil end
 			StopHoverAnchor()
-			farmState     = FARM_STATE.WAIT_CHAR
-			charWaitTimer = 0
-			farmStatus    = "Menunggu respawn..."
-			return
+			if currentFarmTween then currentFarmTween:Cancel() currentFarmTween = nil end
+			farmState  = FARM_STATE.WAIT_CHAR
+			farmStatus = "Menunggu respawn..."
+			task.wait(2)
+			continue
 		end
 
 		if farmState == FARM_STATE.WAIT_CHAR then
-			charWaitTimer = charWaitTimer + dt
-			if charWaitTimer < 0.5 then return end
 			farmState  = FARM_STATE.GO_QUEST
 			farmStatus = "Character loaded — lanjut farm"
-			return
+			continue
 		end
 
 		local farmData, level = GetFarmData()
 		if not farmData then
 			farmStatus = "Level " .. tostring(level) .. " tidak ada di database"
-			return
+			continue
 		end
 
-		local npcCFrame = GetNPCCFrame(farmData)
-
-		-- ── GO_QUEST ──────────────────────────────────────────────────────────
 		if farmState == FARM_STATE.GO_QUEST then
 			StopHoverAnchor()
-			questStuckTimer = 0
 			if HasActiveQuest() then
 				farmState  = FARM_STATE.GO_MOB
 				farmStatus = "Quest aktif — hunting"
-				return
+				continue
 			end
+			local npcCFrame = GetNPCCFrame(farmData)
 			if not npcCFrame then
-				farmStatus = "NPC belum ketemu, diam di tempat..."
-				return
+				farmStatus = "NPC belum ketemu..."
+				continue
 			end
 			local npcPos = npcCFrame.Position
 			local xzDist = Vector2.new(npcPos.X - root.Position.X, npcPos.Z - root.Position.Z).Magnitude
+			local hoverPos = Vector3.new(npcPos.X, math.max(npcPos.Y + 10, MIN_FLY_Y), npcPos.Z)
 			if xzDist > QUEST_RADIUS then
 				farmStatus = "Terbang ke NPC quest..."
-				waitingFly = true
-				-- terbang ke hover 10 stud di atas NPC, bukan persis di NPC
-				local hoverPos = Vector3.new(npcPos.X, math.max(npcPos.Y + 10, MIN_FLY_Y), npcPos.Z)
-				FlyTo(CFrame.new(hoverPos), function()
-					waitingFly = false
-					-- langsung anchor di sini — noclip tidak akan menjatuhkan karakter
-					StartHoverAnchor(hoverPos)
-					farmState = FARM_STATE.TAKE_QUEST
-				end)
-			else
-				-- sudah dekat, anchor dulu sebelum masuk TAKE_QUEST
-				local hoverPos = Vector3.new(npcPos.X, math.max(root.Position.Y, npcPos.Y + 10, MIN_FLY_Y), npcPos.Z)
-				StartHoverAnchor(hoverPos)
-				farmState = FARM_STATE.TAKE_QUEST
+				local done = false
+				FlyTo(CFrame.new(hoverPos), function() done = true end)
+				local timeout = tick() + 15
+				while not done and farmRunning do
+					task.wait(0.1)
+					if tick() > timeout then break end
+				end
+				if not farmRunning then break end
 			end
+			StartHoverAnchor(hoverPos)
+			farmState = FARM_STATE.TAKE_QUEST
 
-		-- ── TAKE_QUEST ────────────────────────────────────────────────────────
 		elseif farmState == FARM_STATE.TAKE_QUEST then
-			questStuckTimer = questStuckTimer + dt
-
 			if HasActiveQuest() then
 				StopHoverAnchor()
-				farmState       = FARM_STATE.GO_MOB
-				questStuckTimer = 0
-				farmStatus      = "Quest diterima!"
-				return
+				farmState  = FARM_STATE.GO_MOB
+				farmStatus = "Quest diterima!"
+				continue
 			end
-
-			-- BYPASS: 2 detik di NPC zone tanpa quest → paksa GO_MOB
-			if questStuckTimer >= QUEST_TIMEOUT then
-				StopHoverAnchor()
-				farmState       = FARM_STATE.GO_MOB
-				questStuckTimer = 0
-				farmStatus      = "Quest timeout — force attack"
-				return
-			end
-
-			if not npcCFrame then farmState = FARM_STATE.GO_QUEST return end
-
-			local npcPos = npcCFrame.Position
-			local xzDist = Vector2.new(npcPos.X - root.Position.X, npcPos.Z - root.Position.Z).Magnitude
-			if xzDist > QUEST_RADIUS then
-				StopHoverAnchor()
-				farmState       = FARM_STATE.GO_QUEST
-				questStuckTimer = 0
-				return
-			end
-
-			-- DEBOUNCE: panggil StartQuest max 1x per QUEST_COOLDOWN detik
-			local now = tick()
-			if now - lastQuestCall < QUEST_COOLDOWN then return end
-			lastQuestCall = now
-
 			farmStatus = "Ambil quest: " .. farmData.QuestName .. " #" .. farmData.QuestNum
 			if CommF then
 				pcall(function()
 					CommF:InvokeServer("StartQuest", farmData.QuestName, farmData.QuestNum)
 				end)
 			end
+			task.wait(2.0)
+			StopHoverAnchor()
+			if HasActiveQuest() then
+				farmState  = FARM_STATE.GO_MOB
+				farmStatus = "Quest diterima!"
+			else
+				farmState  = FARM_STATE.GO_MOB
+				farmStatus = "Quest timeout — force attack"
+			end
 
-		-- ── GO_MOB ────────────────────────────────────────────────────────────
 		elseif farmState == FARM_STATE.GO_MOB then
 			StopHoverAnchor()
-			questStuckTimer = 0
 			if not HasActiveQuest() then
 				farmState  = FARM_STATE.GO_QUEST
 				farmStatus = "Quest selesai — ambil baru"
-				return
+				continue
 			end
 			local mob = FindNearestMob(farmData.MobName, farmData.MobFolder)
 			if not mob then
-				farmState      = FARM_STATE.WAIT_SPAWN
-				waitSpawnTimer = 0
-				farmStatus     = "Nunggu mob spawn..."
-				return
+				farmState  = FARM_STATE.WAIT_SPAWN
+				farmStatus = "Nunggu mob spawn..."
+				continue
 			end
 			local mr = mob:FindFirstChild("HumanoidRootPart")
-			if not mr then farmStatus = "Mob no root" return end
+			if not mr or mr.Position == Vector3.zero then continue end
 			local mobPos  = mr.Position
-			if mobPos == Vector3.zero then farmStatus = "Mob pos invalid" return end
 			local hoverY  = math.max(mobPos.Y + CONFIG.FarmHoverHeight, MIN_FLY_Y)
 			local hoverCF = CFrame.new(Vector3.new(mobPos.X, hoverY, mobPos.Z))
 			if (hoverCF.Position - root.Position).Magnitude > 8 then
 				farmStatus = "Terbang ke " .. farmData.MobName .. "..."
-				waitingFly = true
-				FlyTo(hoverCF, function()
-					waitingFly = false
-					farmState  = FARM_STATE.ATTACK
-				end)
-			else
-				farmState = FARM_STATE.ATTACK
+				local done = false
+				FlyTo(hoverCF, function() done = true end)
+				local timeout = tick() + 15
+				while not done and farmRunning do
+					task.wait(0.1)
+					if tick() > timeout then break end
+				end
+				if not farmRunning then break end
 			end
+			farmState = FARM_STATE.ATTACK
 
-		-- ── ATTACK ────────────────────────────────────────────────────────────
 		elseif farmState == FARM_STATE.ATTACK then
-			StopHoverAnchor()
-			questStuckTimer = 0
 			if not HasActiveQuest() then
 				farmState  = FARM_STATE.GO_QUEST
 				farmStatus = "Quest selesai — ambil baru"
-				return
+				continue
 			end
 			local mob = FindNearestMob(farmData.MobName, farmData.MobFolder)
 			if not mob or not mob:FindFirstChild("HumanoidRootPart") then
-				farmState      = FARM_STATE.WAIT_SPAWN
-				waitSpawnTimer = 0
-				farmStatus     = "Mob mati — nunggu respawn"
-				return
+				farmState  = FARM_STATE.WAIT_SPAWN
+				farmStatus = "Mob mati — nunggu respawn"
+				continue
 			end
 			local mr     = mob.HumanoidRootPart
 			local mobPos = mr.Position
-			if mobPos == Vector3.zero then farmStatus = "Mob pos invalid" return end
+			if mobPos == Vector3.zero then continue end
 			local hoverY   = math.max(mobPos.Y + CONFIG.FarmHoverHeight, MIN_FLY_Y)
 			local freshHum = char:FindFirstChildOfClass("Humanoid")
 			if freshHum then freshHum.PlatformStand = true end
@@ -494,21 +434,32 @@ local function StartFarm()
 			farmStatus = "Nyerang " .. farmData.MobName
 			ExecuteAttack(mob)
 
-		-- ── WAIT_SPAWN ────────────────────────────────────────────────────────
 		elseif farmState == FARM_STATE.WAIT_SPAWN then
-			waitSpawnTimer = waitSpawnTimer + dt
-			if waitSpawnTimer < 1.5 then return end
-			waitSpawnTimer = 0
-			if FindNearestMob(farmData.MobName, farmData.MobFolder) then
+			local mob = FindNearestMob(farmData.MobName, farmData.MobFolder)
+			if mob then
 				farmState  = FARM_STATE.GO_MOB
 				farmStatus = "Mob ketemu!"
+			else
+				farmStatus = "Nunggu mob spawn..."
+				task.wait(1.5)
 			end
 		end
-	end)
+	end
+
+	farmState  = FARM_STATE.IDLE
+	farmStatus = "Idle"
+end
+
+local function StartFarm()
+	if farmRunning then return end
+	if currentFarmTween then currentFarmTween:Cancel() currentFarmTween = nil end
+	StopHoverAnchor()
+	farmRunning = true
+	task.spawn(FarmLoop)
 end
 
 local function StopFarm()
-	if farmConn then farmConn:Disconnect() farmConn = nil end
+	farmRunning = false
 	if currentFarmTween then currentFarmTween:Cancel() currentFarmTween = nil end
 	StopHoverAnchor()
 	local char = LocalPlayer.Character
@@ -519,12 +470,8 @@ local function StopFarm()
 	if not CONFIG.Mode10 then
 		if noclipConn then noclipConn:Disconnect() noclipConn = nil end
 	end
-	farmState       = FARM_STATE.IDLE
-	farmStatus      = "Idle"
-	waitingFly      = false
-	waitSpawnTimer  = 0
-	questStuckTimer = 0
-	lastQuestCall   = 0
+	farmState  = FARM_STATE.IDLE
+	farmStatus = "Idle"
 end
 
 local silentTarget = nil
@@ -1158,19 +1105,14 @@ end)
 
 LocalPlayer.CharacterAdded:Connect(function(char)
 	LocalCharacter=char
-	LocalRoot =char:WaitForChild("HumanoidRootPart")
+	LocalRoot=char:WaitForChild("HumanoidRootPart")
 	LocalHumanoid=char:WaitForChild("Humanoid")
 	OriginalLocalSize=nil; dashHolding=false; silentTarget=nil
 	if currentFarmTween then currentFarmTween:Cancel() currentFarmTween=nil end
 	StopHoverAnchor()
-	waitingFly=false
 	if CONFIG.Mode9 then
-		farmState      =FARM_STATE.WAIT_CHAR
-		charWaitTimer  =0
-		waitSpawnTimer =0
-		questStuckTimer=0
-		lastQuestCall  =0
-		farmStatus     ="Respawned — restarting"
+		farmState  = FARM_STATE.WAIT_CHAR
+		farmStatus = "Respawned — restarting"
 	end
 	if CONFIG.Mode5 then
 		local hum=char:FindFirstChildOfClass("Humanoid")
