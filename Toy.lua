@@ -1,6 +1,7 @@
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
 local Camera = Workspace.CurrentCamera
 
@@ -12,31 +13,122 @@ local LocalHumanoid = LocalCharacter:WaitForChild("Humanoid")
 local CONFIG = {
     Mode1 = false, Mode2 = false, Mode3 = false,
     Mode4 = false, Mode5 = false, Mode6 = false,
-    HitboxPercent = 1,
-    SpeedPercent  = 50,
-    Radius        = 15,
+    Mode7 = false, -- Aim Prediction
+    Mode8 = false, -- Fast Attack
+    HitboxPercent    = 1,
+    SpeedPercent     = 50,
+    Radius           = 15,
+    ProjectileSpeed  = 200,   -- studs/s — adjust ke weapon
+    FastAttackDelay  = 0.08,  -- detik antar fire
+    PredictionTarget = nil,   -- BasePart atau nil
 }
 
 local BASE_SPEED    = 16
 local MAX_SPEED     = 500
 local MIN_HITBOX    = 4
 local MAX_HITBOX    = 80
-local DASH_INTERVAL = 0.08  -- sedikit lebih longgar biar server bisa register
+local DASH_INTERVAL = 0.08
 
-local OriginalLocalSize = nil
-local ESP_Objects       = {}
-local lastDashTime      = 0
-local dashHolding       = false
-local dashConn          = nil  -- koneksi loop dash terpisah
+local OriginalLocalSize  = nil
+local ESP_Objects        = {}
+local lastDashTime       = 0
+local dashHolding        = false
+local dashConn           = nil
+local fastAttackConn     = nil
+local lastFastAttack     = 0
 
+-- ── NET PATH — cari RegisterAttack di ReplicatedStorage ──────────────────────
+local Net = nil
+local RegisterAttack = nil
+
+local function TryBindNet()
+    local ok = pcall(function()
+        Net = ReplicatedStorage:WaitForChild("Modules", 3)
+                               :WaitForChild("Net", 3)
+        RegisterAttack = Net:WaitForChild("RegisterAttack", 3)
+    end)
+    if not ok or not RegisterAttack then
+        -- fallback: cari langsung di RS root
+        RegisterAttack = ReplicatedStorage:FindFirstChild("RegisterAttack", true)
+    end
+end
+
+task.spawn(TryBindNet)
+
+-- ── PREDICTION ────────────────────────────────────────────────────────────────
+-- returns predicted world position berdasarkan velocity + jarak / kecepatan proyektil
+local function PredictPosition(targetRoot, projSpeed)
+    if not targetRoot or not targetRoot.Parent then return nil end
+    local myPos    = Camera.CFrame.Position
+    local tPos     = targetRoot.Position
+    local tVel     = targetRoot.AssemblyLinearVelocity
+    local dist     = (tPos - myPos).Magnitude
+    local ttr      = dist / math.max(projSpeed, 1)   -- time to reach
+    return tPos + (tVel * ttr)
+end
+
+-- cari target terdekat yang on-screen
+local function GetNearestTarget()
+    local best, bestDist = nil, math.huge
+    local vp = Camera.ViewportSize
+    local cx, cy = vp.X / 2, vp.Y / 2
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player == LocalPlayer then continue end
+        local char = player.Character
+        if not char then continue end
+        local root = char:FindFirstChild("HumanoidRootPart")
+        local hum  = char:FindFirstChild("Humanoid")
+        if not (root and hum and hum.Health > 0) then continue end
+
+        local screen, onScreen = Camera:WorldToScreenPoint(root.Position)
+        if not onScreen then continue end
+
+        local dx   = screen.X - cx
+        local dy   = screen.Y - cy
+        local dist = math.sqrt(dx*dx + dy*dy)
+        if dist < bestDist then
+            bestDist = dist
+            best     = root
+        end
+    end
+    return best
+end
+
+-- ── FAST ATTACK ───────────────────────────────────────────────────────────────
+local function DoFastAttack(targetPart)
+    if not RegisterAttack then return end
+    if not targetPart or not targetPart.Parent then return end
+    pcall(function()
+        RegisterAttack:FireServer(targetPart)
+    end)
+end
+
+local function StartFastAttack()
+    if fastAttackConn then fastAttackConn:Disconnect() fastAttackConn = nil end
+    fastAttackConn = RunService.Heartbeat:Connect(function()
+        if not CONFIG.Mode8 then return end
+        local now = tick()
+        if now - lastFastAttack < CONFIG.FastAttackDelay then return end
+        lastFastAttack = now
+
+        local target = CONFIG.PredictionTarget or GetNearestTarget()
+        if not target then return end
+        DoFastAttack(target)
+    end)
+end
+
+local function StopFastAttack()
+    if fastAttackConn then fastAttackConn:Disconnect() fastAttackConn = nil end
+end
+
+-- ── HITBOX ────────────────────────────────────────────────────────────────────
 local function PctToSize(pct)
     return MIN_HITBOX + (MAX_HITBOX - MIN_HITBOX) * ((pct - 1) / 99)
 end
 
 local function ExpandHitbox()
-    if not OriginalLocalSize then
-        OriginalLocalSize = LocalRoot.Size
-    end
+    if not OriginalLocalSize then OriginalLocalSize = LocalRoot.Size end
     local sz = PctToSize(CONFIG.HitboxPercent)
     LocalRoot.Size = Vector3.new(sz, sz, sz)
 end
@@ -53,38 +145,27 @@ local function GetTargetSpeed()
 end
 
 local function Mode2Func(centerPosition)
-    local hitboxPart = Instance.new("Part")
-    hitboxPart.Name         = "Ontoy_Part"
-    hitboxPart.Size         = Vector3.new(CONFIG.Radius * 2, 10, CONFIG.Radius * 2)
-    hitboxPart.Position     = centerPosition
-    hitboxPart.Anchored     = true
-    hitboxPart.CanCollide   = false
-    hitboxPart.Transparency = 1
-    hitboxPart.Parent       = Workspace
-    game:GetService("Debris"):AddItem(hitboxPart, 0.1)
+    local p = Instance.new("Part")
+    p.Name         = "Ontoy_Part"
+    p.Size         = Vector3.new(CONFIG.Radius * 2, 10, CONFIG.Radius * 2)
+    p.Position     = centerPosition
+    p.Anchored     = true
+    p.CanCollide   = false
+    p.Transparency = 1
+    p.Parent       = Workspace
+    game:GetService("Debris"):AddItem(p, 0.1)
 end
 
--- ── DASH SPAM — fireproof, langsung simulate keypress lewat keydown event ──────
--- VirtualInputManager sering di-block executor; pake KeyboardEvent simulate
+-- ── DASH ─────────────────────────────────────────────────────────────────────
 local function SimulateDash()
-    -- trigger InputBegan manual untuk Q — kompatibel di semua executor
-    local fakeInput = {
-        KeyCode       = Enum.KeyCode.Q,
-        UserInputType = Enum.UserInputType.Keyboard,
-        Delta         = Vector3.zero,
-        Position      = Vector3.zero,
-    }
-    -- coba VirtualInput dulu, fallback ke fireclickdetector/firetouchinterest
-    local ok = pcall(function()
+    pcall(function()
         game:GetService("VirtualInputManager"):SendKeyEvent(true, Enum.KeyCode.Q, false, game)
     end)
-    if ok then
-        task.delay(0.03, function()
-            pcall(function()
-                game:GetService("VirtualInputManager"):SendKeyEvent(false, Enum.KeyCode.Q, false, game)
-            end)
+    task.delay(0.03, function()
+        pcall(function()
+            game:GetService("VirtualInputManager"):SendKeyEvent(false, Enum.KeyCode.Q, false, game)
         end)
-    end
+    end)
 end
 
 local function StartDashLoop()
@@ -104,20 +185,14 @@ local function StopDashLoop()
     dashHolding = false
 end
 
--- Q hold detection
 UserInputService.InputBegan:Connect(function(input, gp)
-    if gp then return end  -- jangan intercept game processed
-    if input.KeyCode == Enum.KeyCode.Q then
-        if CONFIG.Mode6 then
-            dashHolding = true
-        end
+    if gp then return end
+    if input.KeyCode == Enum.KeyCode.Q and CONFIG.Mode6 then
+        dashHolding = true
     end
 end)
-
 UserInputService.InputEnded:Connect(function(input)
-    if input.KeyCode == Enum.KeyCode.Q then
-        dashHolding = false
-    end
+    if input.KeyCode == Enum.KeyCode.Q then dashHolding = false end
 end)
 
 -- ── ESP ───────────────────────────────────────────────────────────────────────
@@ -134,17 +209,16 @@ local function CreateESP(player)
     esp.NameTag.Size = 13; esp.NameTag.Color = Color3.fromRGB(255,255,255)
     esp.NameTag.Center = true; esp.NameTag.Outline = true
     esp.NameTag.OutlineColor = Color3.fromRGB(0,0,0); esp.NameTag.Visible = false
-    esp.HealthBar.Thickness = 1; esp.HealthBar.Color = Color3.fromRGB(0,255,0)
-    esp.HealthBar.Filled = true; esp.HealthBar.Visible = false
+    esp.HealthBar.Thickness = 1; esp.HealthBar.Filled = true; esp.HealthBar.Visible = false
     return esp
 end
 
-local function CleanupESP(player)
-    local esp = ESP_Objects[player]
+local function CleanupESP(p)
+    local esp = ESP_Objects[p]
     if esp then
         esp.Box:Remove(); esp.Line:Remove()
         esp.NameTag:Remove(); esp.HealthBar:Remove()
-        ESP_Objects[player] = nil
+        ESP_Objects[p] = nil
     end
 end
 
@@ -163,38 +237,95 @@ end
 Players.PlayerAdded:Connect(function(p)    ESP_Objects[p] = CreateESP(p) end)
 Players.PlayerRemoving:Connect(function(p) CleanupESP(p) end)
 
+-- prediction dot drawing — overlay di screen
+local predDot = Drawing.new("Circle")
+predDot.Radius    = 6
+predDot.Color     = Color3.fromRGB(255, 200, 0)
+predDot.Filled    = true
+predDot.Thickness = 1
+predDot.Visible   = false
+
+local predLine = Drawing.new("Line")
+predLine.Thickness = 1
+predLine.Color     = Color3.fromRGB(255, 200, 0)
+predLine.Visible   = false
+
 local function RenderESP()
     if not CONFIG.Mode3 then HideAllESP() return end
     for player, esp in pairs(ESP_Objects) do
         local character = player.Character
         if not character then HideESP(esp) continue end
-        local root     = character:FindFirstChild("HumanoidRootPart")
-        local humanoid = character:FindFirstChild("Humanoid")
-        local head     = character:FindFirstChild("Head")
-        if not (root and humanoid and head and humanoid.Health > 0) then HideESP(esp) continue end
-        local rootScreen, onScreen = Camera:WorldToScreenPoint(root.Position)
-        local headScreen           = Camera:WorldToScreenPoint(head.Position)
+        local root = character:FindFirstChild("HumanoidRootPart")
+        local hum  = character:FindFirstChild("Humanoid")
+        local head = character:FindFirstChild("Head")
+        if not (root and hum and head and hum.Health > 0) then HideESP(esp) continue end
+        local rs, onScreen = Camera:WorldToScreenPoint(root.Position)
+        local hs           = Camera:WorldToScreenPoint(head.Position)
         if not onScreen then HideESP(esp) continue end
-        local height = math.max(math.abs(rootScreen.Y - headScreen.Y) * 2, 10)
+        local height = math.max(math.abs(rs.Y - hs.Y) * 2, 10)
         local width  = height * 0.5
-        local boxPos = Vector2.new(rootScreen.X - width/2, rootScreen.Y - height/2)
+        local boxPos = Vector2.new(rs.X - width/2, rs.Y - height/2)
         esp.Box.Size = Vector2.new(width, height); esp.Box.Position = boxPos; esp.Box.Visible = true
-        local hpRatio = humanoid.Health / humanoid.MaxHealth
-        local barH    = height * hpRatio
+        local hpR  = hum.Health / hum.MaxHealth
+        local barH = height * hpR
         esp.HealthBar.Size     = Vector2.new(4, barH)
         esp.HealthBar.Position = Vector2.new(boxPos.X - 7, boxPos.Y + (height - barH))
-        esp.HealthBar.Color    = Color3.fromRGB(math.floor(255*(1-hpRatio)), math.floor(255*hpRatio), 0)
+        esp.HealthBar.Color    = Color3.fromRGB(math.floor(255*(1-hpR)), math.floor(255*hpR), 0)
         esp.HealthBar.Visible  = true
         local dist = math.floor((root.Position - LocalRoot.Position).Magnitude)
-        esp.NameTag.Text     = player.Name.." ["..math.floor(humanoid.Health).."hp | "..dist.."m]"
-        esp.NameTag.Position = Vector2.new(rootScreen.X, boxPos.Y - 16)
+        esp.NameTag.Text     = player.Name.." ["..math.floor(hum.Health).."hp | "..dist.."m]"
+        esp.NameTag.Position = Vector2.new(rs.X, boxPos.Y - 16)
         esp.NameTag.Visible  = true
         if CONFIG.Mode4 then
             local sc = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y)
-            esp.Line.From = sc; esp.Line.To = Vector2.new(rootScreen.X, rootScreen.Y); esp.Line.Visible = true
+            esp.Line.From = sc; esp.Line.To = Vector2.new(rs.X, rs.Y); esp.Line.Visible = true
         else
             esp.Line.Visible = false
         end
+    end
+end
+
+-- prediction overlay — dot kuning di posisi prediksi target terdekat
+local function RenderPrediction()
+    if not CONFIG.Mode7 then
+        predDot.Visible  = false
+        predLine.Visible = false
+        return
+    end
+
+    local target = GetNearestTarget()
+    CONFIG.PredictionTarget = target  -- share ke fast attack
+
+    if not target then
+        predDot.Visible  = false
+        predLine.Visible = false
+        return
+    end
+
+    local predPos = PredictPosition(target, CONFIG.ProjectileSpeed)
+    if not predPos then
+        predDot.Visible = false
+        predLine.Visible = false
+        return
+    end
+
+    local predScreen, predOnScreen = Camera:WorldToScreenPoint(predPos)
+    local realScreen, realOnScreen = Camera:WorldToScreenPoint(target.Position)
+
+    if predOnScreen then
+        predDot.Position = Vector2.new(predScreen.X, predScreen.Y)
+        predDot.Visible  = true
+    else
+        predDot.Visible = false
+    end
+
+    -- garis dari posisi real ke posisi prediksi
+    if predOnScreen and realOnScreen then
+        predLine.From    = Vector2.new(realScreen.X, realScreen.Y)
+        predLine.To      = Vector2.new(predScreen.X, predScreen.Y)
+        predLine.Visible = true
+    else
+        predLine.Visible = false
     end
 end
 
@@ -224,14 +355,13 @@ mainWindow.Position         = UDim2.new(0.5, -290, 0.5, -200)
 mainWindow.BackgroundColor3 = REDZ.BG
 mainWindow.BorderSizePixel  = 0
 mainWindow.Active           = true
-mainWindow.Draggable        = false   -- DIMATIIN — biar ga kegeser pas drag slider
+mainWindow.Draggable        = false
 mainWindow.Parent           = screenGui
 Instance.new("UICorner", mainWindow).CornerRadius = UDim.new(0, 10)
 local mainStroke = Instance.new("UIStroke", mainWindow)
-mainStroke.Color     = REDZ.Stroke
-mainStroke.Thickness = 1.5
+mainStroke.Color = REDZ.Stroke; mainStroke.Thickness = 1.5
 
--- ── TITLE BAR (ini yang bisa didrag, bukan seluruh window) ───────────────────
+-- title bar drag
 local titleBar = Instance.new("Frame", mainWindow)
 titleBar.Size             = UDim2.new(1, 0, 0, 42)
 titleBar.BackgroundColor3 = REDZ.BG2
@@ -239,7 +369,6 @@ titleBar.BorderSizePixel  = 0
 titleBar.Active           = true
 Instance.new("UICorner", titleBar).CornerRadius = UDim.new(0, 10)
 
--- drag logic manual — hanya dari title bar
 local draggingWindow = false
 local dragStartMouse = Vector2.zero
 local dragStartPos   = UDim2.new()
@@ -251,19 +380,15 @@ titleBar.InputBegan:Connect(function(input)
         dragStartPos   = mainWindow.Position
     end
 end)
-
 UserInputService.InputChanged:Connect(function(input)
     if draggingWindow and input.UserInputType == Enum.UserInputType.MouseMovement then
         local delta = Vector2.new(input.Position.X, input.Position.Y) - dragStartMouse
         mainWindow.Position = UDim2.new(
-            dragStartPos.X.Scale,
-            dragStartPos.X.Offset + delta.X,
-            dragStartPos.Y.Scale,
-            dragStartPos.Y.Offset + delta.Y
+            dragStartPos.X.Scale, dragStartPos.X.Offset + delta.X,
+            dragStartPos.Y.Scale, dragStartPos.Y.Offset + delta.Y
         )
     end
 end)
-
 UserInputService.InputEnded:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1 then
         draggingWindow = false
@@ -321,7 +446,7 @@ end
 local closeBtn    = MakeWindowBtn(titleBar, -34, REDZ.Accent,    "✕")
 local minimizeBtn = MakeWindowBtn(titleBar, -66, REDZ.ToggleOff, "—")
 
--- ── SIDEBAR ───────────────────────────────────────────────────────────────────
+-- sidebar
 local sidebar = Instance.new("Frame", mainWindow)
 sidebar.Size             = UDim2.new(0, 148, 1, -42)
 sidebar.Position         = UDim2.new(0, 0, 0, 42)
@@ -336,7 +461,7 @@ sideLayout.Padding             = UDim.new(0, 3)
 sideLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
 Instance.new("UIPadding", sidebar).PaddingTop = UDim.new(0, 12)
 
--- ── CONTENT ───────────────────────────────────────────────────────────────────
+-- content
 local contentArea = Instance.new("Frame", mainWindow)
 contentArea.Size                   = UDim2.new(1, -156, 1, -50)
 contentArea.Position               = UDim2.new(0, 152, 0, 46)
@@ -357,7 +482,7 @@ contentLayout.Padding             = UDim.new(0, 6)
 contentLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
 Instance.new("UIPadding", contentScroll).PaddingTop = UDim.new(0, 8)
 
--- ── PAGE / SIDEBAR HELPERS ────────────────────────────────────────────────────
+-- ── HELPERS ───────────────────────────────────────────────────────────────────
 local pages          = {}
 local sidebarButtons = {}
 
@@ -439,7 +564,6 @@ local function MakeSectionLabel(parent, text)
     return lbl
 end
 
--- ── TOGGLE ROW — fix: state sync benar, toggle button TIDAK nutup seluruh row ─
 local function MakeToggleRow(parent, label, sublabel)
     local row = Instance.new("Frame", parent)
     row.Size             = UDim2.new(1, -8, 0, 52)
@@ -485,8 +609,6 @@ local function MakeToggleRow(parent, label, sublabel)
     toggleKnob.BorderSizePixel  = 0
     Instance.new("UICorner", toggleKnob).CornerRadius = UDim.new(0, 7)
 
-    -- FIX: togBtn cuma nutup area toggle switch, bukan seluruh row
-    -- ini yang bikin drag slider keintercept sama toggle click
     local togBtn = Instance.new("TextButton", toggleBG)
     togBtn.Size                   = UDim2.new(1, 8, 1, 8)
     togBtn.Position               = UDim2.new(0, -4, 0, -4)
@@ -495,35 +617,26 @@ local function MakeToggleRow(parent, label, sublabel)
     togBtn.BorderSizePixel        = 0
 
     local state = false
-
     local function SetState(s)
         state = s
         if s then
-            toggleBG.BackgroundColor3  = REDZ.Accent
+            toggleBG.BackgroundColor3   = REDZ.Accent
             toggleKnob.BackgroundColor3 = Color3.fromRGB(255,255,255)
             toggleKnob.Position         = UDim2.new(1, -17, 0.5, -7)
             row.BackgroundColor3        = Color3.fromRGB(24, 14, 18)
             stroke.Color                = REDZ.AccentDim
         else
-            toggleBG.BackgroundColor3  = REDZ.ToggleOff
+            toggleBG.BackgroundColor3   = REDZ.ToggleOff
             toggleKnob.BackgroundColor3 = REDZ.TextSub
             toggleKnob.Position         = UDim2.new(0, 3, 0.5, -7)
             row.BackgroundColor3        = REDZ.BG2
             stroke.Color                = REDZ.Stroke
         end
     end
-
-    -- FIX: toggle langsung di sini, bukan di luar
-    -- caller tinggal connect callback via return value
-    togBtn.MouseButton1Click:Connect(function()
-        SetState(not state)
-    end)
-
-    -- return: row, getter, external callback connector
+    togBtn.MouseButton1Click:Connect(function() SetState(not state) end)
     return row, function() return state end, SetState
 end
 
--- ── SLIDER ROW — fix: InputBegan di sliderBG pake GuiService bukan frame global ─
 local function MakeSliderRow(parent, label, displayMin, displayMax, initPct, unit, onChanged)
     local row = Instance.new("Frame", parent)
     row.Size             = UDim2.new(1, -8, 0, 66)
@@ -559,7 +672,6 @@ local function MakeSliderRow(parent, label, displayMin, displayMax, initPct, uni
     sliderBG.BorderSizePixel  = 0
     Instance.new("UICorner", sliderBG).CornerRadius = UDim.new(0, 3)
 
-    -- hitbox lebih besar dari visual biar gampang diklik
     local sliderHitbox = Instance.new("TextButton", sliderBG)
     sliderHitbox.Size                   = UDim2.new(1, 0, 0, 28)
     sliderHitbox.Position               = UDim2.new(0, 0, 0.5, -14)
@@ -608,11 +720,7 @@ local function MakeSliderRow(parent, label, displayMin, displayMax, initPct, uni
 
     Apply(initPct, math.floor(displayMin + (displayMax - displayMin) * initPct))
 
-    -- drag via hitbox button, bukan frame — ini yang stop HUD kegeser
-    sliderHitbox.MouseButton1Down:Connect(function()
-        dragging = true
-    end)
-
+    sliderHitbox.MouseButton1Down:Connect(function() dragging = true end)
     UserInputService.InputChanged:Connect(function(input)
         if dragging and (
             input.UserInputType == Enum.UserInputType.MouseMovement or
@@ -621,15 +729,12 @@ local function MakeSliderRow(parent, label, displayMin, displayMax, initPct, uni
             Apply(p, v)
         end
     end)
-
     UserInputService.InputEnded:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1 or
            input.UserInputType == Enum.UserInputType.Touch then
             dragging = false
         end
     end)
-
-    -- klik langsung di track (bukan drag)
     sliderHitbox.MouseButton1Click:Connect(function()
         local mouse = UserInputService:GetMouseLocation()
         local p, v = Compute(mouse.X)
@@ -640,28 +745,52 @@ local function MakeSliderRow(parent, label, displayMin, displayMax, initPct, uni
 end
 
 -- ── BUILD PAGES ───────────────────────────────────────────────────────────────
+
+-- COMBAT
 local combatPage = MakePage()
 pages["combat"]  = combatPage
 local combatBtn  = MakeSidebarBtn("⚔", "Combat", "combat")
 
 MakeSectionLabel(combatPage, "HITBOX")
-local _, hbGet, hbSet = MakeToggleRow(combatPage, "Hitbox Expand", "Expand LocalRoot hitbox size")
+local _, hbGet, _ = MakeToggleRow(combatPage, "Hitbox Expand", "Expand LocalRoot hitbox size")
 MakeSliderRow(combatPage, "Hitbox Size", 1, 100, 0.0, "%", function(val)
     CONFIG.HitboxPercent = val
 end)
 
 MakeSectionLabel(combatPage, "COMBAT")
-local _, hbSpamGet, _ = MakeToggleRow(combatPage, "Hitbox Spam", "Spawn hitbox parts at position")
-local _, dashGet, _   = MakeToggleRow(combatPage, "Dash Spam",   "Hold Q — auto dash no delay")
+local _, hbSpamGet, _ = MakeToggleRow(combatPage, "Hitbox Spam",  "Spawn hitbox parts at position")
+local _, dashGet, _   = MakeToggleRow(combatPage, "Dash Spam",    "Hold Q — auto dash no delay")
 
+MakeSectionLabel(combatPage, "PREDICTION & ATTACK")
+
+local _, predGet, _ = MakeToggleRow(combatPage, "Aim Prediction",
+    "Dot kuning = posisi prediksi target bergerak")
+
+MakeSliderRow(combatPage, "Proj Speed", 50, 600,
+    (CONFIG.ProjectileSpeed - 50) / 550,
+    " s/s",
+    function(val) CONFIG.ProjectileSpeed = val end
+)
+
+local _, fastAtkGet, _ = MakeToggleRow(combatPage, "Fast Attack",
+    "FireServer RegisterAttack tanpa delay animasi")
+
+MakeSliderRow(combatPage, "Attack Delay", 1, 30,
+    (1 - CONFIG.FastAttackDelay * 10) ,   -- init ~0.08s
+    " /10s",
+    function(val) CONFIG.FastAttackDelay = val / 100 end
+)
+
+-- VISUAL
 local visualPage = MakePage()
 pages["visual"]  = visualPage
 local visualBtn  = MakeSidebarBtn("👁", "Visual", "visual")
 
 MakeSectionLabel(visualPage, "ESP")
-local _, espGet,    _ = MakeToggleRow(visualPage, "ESP",     "Player boxes, health, distance")
+local _, espGet, _    = MakeToggleRow(visualPage, "ESP",     "Player boxes, health, distance")
 local _, tracerGet, _ = MakeToggleRow(visualPage, "Tracers", "Lines from screen to players")
 
+-- MOVEMENT
 local movePage    = MakePage()
 pages["movement"] = movePage
 local moveBtn     = MakeSidebarBtn("🏃", "Movement", "movement")
@@ -672,38 +801,35 @@ MakeSliderRow(movePage, "Speed", BASE_SPEED, MAX_SPEED, 0.5, " ws", function(val
     CONFIG.SpeedPercent = pct * 100
 end)
 
--- ── WIRE — toggle callback langsung sync CONFIG, bukan nunggu frame ───────────
--- sebelumnya togBtn nutup seluruh row → click di luar toggle pun ngetrigger
--- sekarang togBtn cuma di area switch — CONFIG.ModeX langsung di-set di sini
-
+-- ── WIRE TOGGLES ──────────────────────────────────────────────────────────────
 local function WireToggle(getter, configKey, onEnable, onDisable)
-    -- poll tiap frame — getter() returns state yang udah di-update MakeToggleRow
     RunService.Heartbeat:Connect(function()
         local s = getter()
         if CONFIG[configKey] ~= s then
             CONFIG[configKey] = s
-            if s then
-                if onEnable then onEnable() end
-            else
-                if onDisable then onDisable() end
+            if s then if onEnable  then onEnable()  end
+            else      if onDisable then onDisable()  end
             end
         end
     end)
 end
 
-WireToggle(hbGet,     "Mode1", nil,           RestoreHitbox)
-WireToggle(hbSpamGet, "Mode2")
-WireToggle(espGet,    "Mode3", nil,           HideAllESP)
-WireToggle(tracerGet, "Mode4", nil, function()
+WireToggle(hbGet,      "Mode1", nil,           RestoreHitbox)
+WireToggle(hbSpamGet,  "Mode2")
+WireToggle(espGet,     "Mode3", nil,           HideAllESP)
+WireToggle(tracerGet,  "Mode4", nil, function()
     for _, esp in pairs(ESP_Objects) do esp.Line.Visible = false end
 end)
-WireToggle(speedGet, "Mode5", nil, function()
+WireToggle(speedGet,   "Mode5", nil, function()
     LocalHumanoid.WalkSpeed = BASE_SPEED
 end)
-WireToggle(dashGet, "Mode6",
-    function() StartDashLoop() end,
-    function() StopDashLoop() end
-)
+WireToggle(dashGet,    "Mode6", StartDashLoop, StopDashLoop)
+WireToggle(predGet,    "Mode7", nil, function()
+    predDot.Visible  = false
+    predLine.Visible = false
+    CONFIG.PredictionTarget = nil
+end)
+WireToggle(fastAtkGet, "Mode8", StartFastAttack, StopFastAttack)
 
 -- ── NAV ───────────────────────────────────────────────────────────────────────
 combatBtn.MouseButton1Click:Connect(function() SetActivePage("combat")   end)
@@ -711,7 +837,7 @@ visualBtn.MouseButton1Click:Connect(function() SetActivePage("visual")   end)
 moveBtn.MouseButton1Click:Connect(function()   SetActivePage("movement") end)
 SetActivePage("combat")
 
--- ── MINIMIZE / CLOSE ─────────────────────────────────────────────────────────
+-- minimize / close
 local contentVisible = true
 minimizeBtn.MouseButton1Click:Connect(function()
     contentVisible      = not contentVisible
@@ -727,10 +853,12 @@ closeBtn.MouseButton1Click:Connect(function()
     LocalHumanoid.WalkSpeed = BASE_SPEED
     HideAllESP()
     StopDashLoop()
+    StopFastAttack()
+    predDot:Remove()
+    predLine:Remove()
     screenGui:Destroy()
 end)
 
--- ── RESPAWN ───────────────────────────────────────────────────────────────────
 LocalPlayer.CharacterAdded:Connect(function(char)
     LocalCharacter    = char
     LocalRoot         = char:WaitForChild("HumanoidRootPart")
@@ -746,4 +874,5 @@ RunService.RenderStepped:Connect(function()
     if CONFIG.Mode2 and LocalRoot then Mode2Func(LocalRoot.Position) end
     if CONFIG.Mode5 then LocalHumanoid.WalkSpeed = GetTargetSpeed() end
     RenderESP()
+    RenderPrediction()
 end)
