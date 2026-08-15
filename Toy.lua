@@ -265,7 +265,22 @@ local function FindNearestMob(mobName, mobFolder)
 end
 
 local lastFarmAttack = 0
-local FARM_ATTACK_INTERVAL = 0.10
+local FARM_ATTACK_INTERVAL = 0.075
+local RelzNet = nil
+local RelzRegisterAttack = nil
+local RelzRegisterHit = nil
+
+local function EnsureRelzAttackRemotes()
+    if RelzRegisterAttack and RelzRegisterHit then
+        return true
+    end
+    local ok = pcall(function()
+        RelzNet = RelzNet or require(ReplicatedStorage:WaitForChild("Modules"):WaitForChild("Net"))
+        RelzRegisterAttack = RelzNet:RemoteEvent("RegisterAttack", true)
+        RelzRegisterHit = RelzNet:RemoteEvent("RegisterHit", true)
+    end)
+    return ok and RelzRegisterAttack ~= nil and RelzRegisterHit ~= nil
+end
 
 local function GetClosestRelzEnemy(distance)
     local target, others = nil, {}
@@ -273,11 +288,10 @@ local function GetClosestRelzEnemy(distance)
     local root = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
     if not folder or not root then return nil, others end
 
-    for _, enemy in ipairs(folder:GetChildren()) do
+    for _, enemy in pairs(folder:GetChildren()) do
         local hrp = enemy:FindFirstChild("HumanoidRootPart")
-        local hum = enemy:FindFirstChildOfClass("Humanoid")
-        if hrp and hum and hum.Health > 0 then
-            local dist = (hrp.Position - root.Position).Magnitude
+        if hrp then
+            local dist = LocalPlayer:DistanceFromCharacter(hrp.Position)
             if dist < distance then
                 if not target then
                     target = hrp
@@ -288,12 +302,11 @@ local function GetClosestRelzEnemy(distance)
         end
     end
 
-    for _, player in ipairs(Players:GetPlayers()) do
+    for _, player in pairs(Players:GetPlayers()) do
         if player ~= LocalPlayer and player.Character then
             local hrp = player.Character:FindFirstChild("HumanoidRootPart")
-            local hum = player.Character:FindFirstChildOfClass("Humanoid")
-            if hrp and hum and hum.Health > 0 then
-                local dist = (hrp.Position - root.Position).Magnitude
+            if hrp then
+                local dist = LocalPlayer:DistanceFromCharacter(hrp.Position)
                 if dist < distance then
                     if not target then
                         target = hrp
@@ -308,21 +321,38 @@ local function GetClosestRelzEnemy(distance)
     return target, others
 end
 
-local function AttackNearestRelz()
+local function DoRelzM1(tool)
+    if not tool then return end
+    pcall(function()
+        if tool.Activate then
+            tool:Activate()
+        end
+    end)
+    pcall(function()
+        local leftClickRemote = tool:FindFirstChild("LeftClickRemote")
+        if leftClickRemote and tostring(tool.ToolTip) == "Blox Fruit" then
+            leftClickRemote:FireServer(Vector3.new(0.01,-500,0.01), 1, true)
+            leftClickRemote:FireServer(false)
+        end
+    end)
+end
+
+local function AttackNearestRelz(tool)
     local now = os.clock()
     if now - lastFarmAttack < FARM_ATTACK_INTERVAL then return end
     lastFarmAttack = now
 
     local target, others = GetClosestRelzEnemy(120)
     if not target then return end
+    if not EnsureRelzAttackRemotes() then
+        farmStatus = "Attack remotes belum siap"
+        return
+    end
 
+    DoRelzM1(tool)
     pcall(function()
-        if RegisterAttack then
-            RegisterAttack:FireServer(0)
-        end
-        if RegisterHit then
-            RegisterHit:FireServer(target, others)
-        end
+        RelzRegisterAttack:FireServer(0)
+        RelzRegisterHit:FireServer(target, others)
     end)
 end
 
@@ -389,8 +419,8 @@ local function ExecuteAttack(mob)
         root.CFrame = mr.CFrame * CFrame.new(0, CONFIG.FarmHoverHeight, 0)
     end)
 
-    -- Relz attack pipeline: RegisterAttack -> RegisterHit, repeatedly.
-    AttackNearestRelz()
+    farmStatus = "Nyerang " .. tostring(mob.Name) .. " dengan " .. tostring(tool.Name)
+    AttackNearestRelz(tool)
 end
 
 local FARM_STATE = {
