@@ -18,27 +18,29 @@ local CONFIG = {
 }
 
 local LockedTarget = nil
-local OriginalSizes = {}
+local OriginalTargetSize = nil
 local ESP_Objects = {}
 
-local function ExpandHitbox(player)
-    if not player or not player.Character then return end
-    local root = player.Character:FindFirstChild("HumanoidRootPart")
+local function ExpandHitbox()
+    if not LockedTarget or not LockedTarget.Character then return end
+    local root = LockedTarget.Character:FindFirstChild("HumanoidRootPart")
     if not root then return end
-    if not OriginalSizes[player] then
-        OriginalSizes[player] = root.Size
+    if not OriginalTargetSize then
+        OriginalTargetSize = root.Size
     end
     root.Size = Vector3.new(CONFIG.HitboxSize, CONFIG.HitboxSize, CONFIG.HitboxSize)
 end
 
-local function RestoreHitbox(player)
-    if not player or not player.Character then return end
-    local root = player.Character:FindFirstChild("HumanoidRootPart")
-    if not root then return end
-    if OriginalSizes[player] then
-        root.Size = OriginalSizes[player]
-        OriginalSizes[player] = nil
+local function RestoreHitbox()
+    if not LockedTarget or not LockedTarget.Character then
+        OriginalTargetSize = nil
+        return
     end
+    local root = LockedTarget.Character:FindFirstChild("HumanoidRootPart")
+    if root and OriginalTargetSize then
+        root.Size = OriginalTargetSize
+    end
+    OriginalTargetSize = nil
 end
 
 local function Mode2Func(centerPosition)
@@ -103,7 +105,7 @@ end)
 
 Players.PlayerRemoving:Connect(function(player)
     if player == LockedTarget then
-        RestoreHitbox(player)
+        OriginalTargetSize = nil
         LockedTarget = nil
     end
     CleanupESP(player)
@@ -320,14 +322,14 @@ local function RefreshPlayerList()
             bc.Parent = btn
             btn.MouseButton1Click:Connect(function()
                 if LockedTarget == player then
-                    if CONFIG.Mode1 then RestoreHitbox(player) end
+                    if CONFIG.Mode1 then RestoreHitbox() end
                     LockedTarget = nil
                     SetLockLabel(nil)
                 else
-                    if LockedTarget and CONFIG.Mode1 then RestoreHitbox(LockedTarget) end
+                    if LockedTarget and CONFIG.Mode1 then RestoreHitbox() end
                     LockedTarget = player
                     SetLockLabel(player)
-                    if CONFIG.Mode1 then ExpandHitbox(player) end
+                    if CONFIG.Mode1 then ExpandHitbox() end
                 end
                 RefreshPlayerList()
             end)
@@ -383,7 +385,7 @@ toggleButton.MouseButton1Click:Connect(function()
 end)
 
 closeButton.MouseButton1Click:Connect(function()
-    if LockedTarget then RestoreHitbox(LockedTarget) end
+    RestoreHitbox()
     screenGui:Destroy()
 end)
 
@@ -391,9 +393,9 @@ mode1Button.MouseButton1Click:Connect(function()
     CONFIG.Mode1 = not CONFIG.Mode1
     SetToggle(mode1Button, CONFIG.Mode1, "MODE 1  —  Hitbox Expand")
     if CONFIG.Mode1 then
-        if LockedTarget then ExpandHitbox(LockedTarget) end
+        if LockedTarget then ExpandHitbox() end
     else
-        if LockedTarget then RestoreHitbox(LockedTarget) end
+        RestoreHitbox()
     end
 end)
 
@@ -419,7 +421,7 @@ end)
 
 RunService.RenderStepped:Connect(function()
     if CONFIG.Mode1 and LockedTarget then
-        ExpandHitbox(LockedTarget)
+        ExpandHitbox()
     end
     if CONFIG.Mode2 and LocalRoot then
         Mode2Func(LocalRoot.Position)
@@ -430,13 +432,14 @@ RunService.RenderStepped:Connect(function()
     if LockedTarget then
         local char = LockedTarget.Character
         if not char then
+            RestoreHitbox()
             LockedTarget = nil
             SetLockLabel(nil)
             RefreshPlayerList()
         else
             local hum = char:FindFirstChild("Humanoid")
             if hum and hum.Health <= 0 then
-                RestoreHitbox(LockedTarget)
+                RestoreHitbox()
                 LockedTarget = nil
                 SetLockLabel(nil)
                 RefreshPlayerList()
