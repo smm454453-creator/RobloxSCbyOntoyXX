@@ -1,5 +1,7 @@
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local VirtualInputManager = game:GetService("VirtualInputManager")
 local Workspace = game:GetService("Workspace")
 local Camera = Workspace.CurrentCamera
 
@@ -14,6 +16,7 @@ local CONFIG = {
     Mode3 = false,
     Mode4 = false,
     Mode5 = false,
+    Mode6 = false,
     Radius = 15,
     HitboxSize = 20,
     SpeedPercent = 50,
@@ -21,10 +24,12 @@ local CONFIG = {
 
 local BASE_SPEED = 16
 local MAX_SPEED = 500
+local DASH_INTERVAL = 0.05
 
-local LockedTarget = nil
 local OriginalLocalSize = nil
 local ESP_Objects = {}
+local lastDashTime = 0
+local dashHolding = false
 
 local function ExpandHitbox()
     if not OriginalLocalSize then
@@ -40,13 +45,8 @@ local function RestoreHitbox()
     end
 end
 
-local function ApplySpeed()
-    if CONFIG.Mode5 then
-        local speed = BASE_SPEED + (MAX_SPEED - BASE_SPEED) * (CONFIG.SpeedPercent / 100)
-        LocalHumanoid.WalkSpeed = speed
-    else
-        LocalHumanoid.WalkSpeed = BASE_SPEED
-    end
+local function GetTargetSpeed()
+    return BASE_SPEED + (MAX_SPEED - BASE_SPEED) * (CONFIG.SpeedPercent / 100)
 end
 
 local function Mode2Func(centerPosition)
@@ -123,9 +123,6 @@ Players.PlayerAdded:Connect(function(player)
 end)
 
 Players.PlayerRemoving:Connect(function(player)
-    if player == LockedTarget then
-        LockedTarget = nil
-    end
     CleanupESP(player)
 end)
 
@@ -136,31 +133,24 @@ local function RenderESP()
     end
     for player, esp in pairs(ESP_Objects) do
         local character = player.Character
-        if not character then
-            HideESP(esp)
-            continue
-        end
+        if not character then HideESP(esp) continue end
         local root = character:FindFirstChild("HumanoidRootPart")
         local humanoid = character:FindFirstChild("Humanoid")
         local head = character:FindFirstChild("Head")
         if not (root and humanoid and head and humanoid.Health > 0) then
-            HideESP(esp)
-            continue
+            HideESP(esp) continue
         end
         local rootScreen, onScreen = Camera:WorldToScreenPoint(root.Position)
         local headScreen = Camera:WorldToScreenPoint(head.Position)
-        if not onScreen then
-            HideESP(esp)
-            continue
-        end
+        if not onScreen then HideESP(esp) continue end
+
         local height = math.abs(rootScreen.Y - headScreen.Y) * 2
         if height < 10 then height = 10 end
         local width = height * 0.5
         local boxPos = Vector2.new(rootScreen.X - width / 2, rootScreen.Y - height / 2)
-        local isLocked = (player == LockedTarget)
 
-        esp.Box.Color = isLocked and Color3.fromRGB(0, 255, 100) or Color3.fromRGB(255, 50, 50)
-        esp.Box.Thickness = isLocked and 2 or 1
+        esp.Box.Color = Color3.fromRGB(255, 50, 50)
+        esp.Box.Thickness = 1
         esp.Box.Size = Vector2.new(width, height)
         esp.Box.Position = boxPos
         esp.Box.Visible = true
@@ -185,7 +175,7 @@ local function RenderESP()
             local screenCenter = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y)
             esp.Line.From = screenCenter
             esp.Line.To = Vector2.new(rootScreen.X, rootScreen.Y)
-            esp.Line.Color = isLocked and Color3.fromRGB(0, 255, 100) or Color3.fromRGB(0, 255, 255)
+            esp.Line.Color = Color3.fromRGB(0, 255, 255)
             esp.Line.Visible = true
         else
             esp.Line.Visible = false
@@ -221,7 +211,7 @@ c0.CornerRadius = UDim.new(0, 6)
 c0.Parent = toggleButton
 
 local mainFrame = Instance.new("Frame")
-mainFrame.Size = UDim2.new(0, 230, 0, 500)
+mainFrame.Size = UDim2.new(0, 230, 0, 470)
 mainFrame.Position = UDim2.new(0, 10, 0, 48)
 mainFrame.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
 mainFrame.BorderSizePixel = 0
@@ -269,98 +259,6 @@ local c3 = Instance.new("UICorner")
 c3.CornerRadius = UDim.new(0, 6)
 c3.Parent = closeButton
 
-local targetLabel = Instance.new("TextLabel")
-targetLabel.Size = UDim2.new(1, -20, 0, 16)
-targetLabel.Position = UDim2.new(0, 10, 0, 44)
-targetLabel.BackgroundTransparency = 1
-targetLabel.Text = "SELECT TARGET"
-targetLabel.TextColor3 = Color3.fromRGB(120, 120, 150)
-targetLabel.Font = Enum.Font.GothamBold
-targetLabel.TextSize = 10
-targetLabel.TextXAlignment = Enum.TextXAlignment.Left
-targetLabel.Parent = mainFrame
-
-local playerListFrame = Instance.new("ScrollingFrame")
-playerListFrame.Size = UDim2.new(1, -20, 0, 100)
-playerListFrame.Position = UDim2.new(0, 10, 0, 62)
-playerListFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 32)
-playerListFrame.BorderSizePixel = 0
-playerListFrame.ScrollBarThickness = 3
-playerListFrame.ScrollBarImageColor3 = Color3.fromRGB(80, 80, 120)
-playerListFrame.Parent = mainFrame
-local c4 = Instance.new("UICorner")
-c4.CornerRadius = UDim.new(0, 6)
-c4.Parent = playerListFrame
-local listLayout = Instance.new("UIListLayout")
-listLayout.SortOrder = Enum.SortOrder.Name
-listLayout.Padding = UDim.new(0, 2)
-listLayout.Parent = playerListFrame
-
-local lockLabel = Instance.new("TextLabel")
-lockLabel.Size = UDim2.new(1, -20, 0, 16)
-lockLabel.Position = UDim2.new(0, 10, 0, 170)
-lockLabel.BackgroundTransparency = 1
-lockLabel.Text = "TARGET: none"
-lockLabel.TextColor3 = Color3.fromRGB(150, 150, 180)
-lockLabel.Font = Enum.Font.Gotham
-lockLabel.TextSize = 11
-lockLabel.TextXAlignment = Enum.TextXAlignment.Left
-lockLabel.Parent = mainFrame
-
-local function SetLockLabel(player)
-    if player then
-        lockLabel.Text = "TARGET: " .. player.Name
-        lockLabel.TextColor3 = Color3.fromRGB(0, 255, 100)
-    else
-        lockLabel.Text = "TARGET: none"
-        lockLabel.TextColor3 = Color3.fromRGB(150, 150, 180)
-    end
-end
-
-local playerButtons = {}
-
-local function RefreshPlayerList()
-    for _, btn in pairs(playerButtons) do
-        btn:Destroy()
-    end
-    playerButtons = {}
-    local totalHeight = 0
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player ~= LocalPlayer then
-            local btn = Instance.new("TextButton")
-            btn.Size = UDim2.new(1, -6, 0, 28)
-            btn.BackgroundColor3 = (LockedTarget == player) and Color3.fromRGB(0, 120, 60) or Color3.fromRGB(35, 35, 48)
-            btn.Text = "  " .. player.Name
-            btn.TextColor3 = Color3.fromRGB(220, 220, 255)
-            btn.Font = Enum.Font.Gotham
-            btn.TextSize = 11
-            btn.TextXAlignment = Enum.TextXAlignment.Left
-            btn.BorderSizePixel = 0
-            btn.Parent = playerListFrame
-            local bc = Instance.new("UICorner")
-            bc.CornerRadius = UDim.new(0, 4)
-            bc.Parent = btn
-            btn.MouseButton1Click:Connect(function()
-                if LockedTarget == player then
-                    LockedTarget = nil
-                    SetLockLabel(nil)
-                else
-                    LockedTarget = player
-                    SetLockLabel(player)
-                end
-                RefreshPlayerList()
-            end)
-            playerButtons[player] = btn
-            totalHeight = totalHeight + 30
-        end
-    end
-    playerListFrame.CanvasSize = UDim2.new(0, 0, 0, totalHeight)
-end
-
-RefreshPlayerList()
-Players.PlayerAdded:Connect(function() RefreshPlayerList() end)
-Players.PlayerRemoving:Connect(function() RefreshPlayerList() end)
-
 local function MakeButton(text, yPos)
     local btn = Instance.new("TextButton")
     btn.Size = UDim2.new(1, -20, 0, 32)
@@ -379,16 +277,16 @@ local function MakeButton(text, yPos)
     return btn
 end
 
-local mode1Button = MakeButton("MODE 1  —  Hitbox Expand", 194)
-local mode2Button = MakeButton("MODE 2  —  Hitbox Spam", 232)
-local mode3Button = MakeButton("MODE 3  —  ESP", 270)
-local mode4Button = MakeButton("MODE 4  —  Tracers", 308)
-local mode5Button = MakeButton("MODE 5  —  Fast Run", 346)
+local mode1Button = MakeButton("MODE 1  —  Hitbox Expand", 44)
+local mode2Button = MakeButton("MODE 2  —  Hitbox Spam", 82)
+local mode3Button = MakeButton("MODE 3  —  ESP", 120)
+local mode4Button = MakeButton("MODE 4  —  Tracers", 158)
+local mode5Button = MakeButton("MODE 5  —  Fast Run", 196)
 
 -- Speed slider
 local speedLabel = Instance.new("TextLabel")
 speedLabel.Size = UDim2.new(1, -20, 0, 14)
-speedLabel.Position = UDim2.new(0, 10, 0, 384)
+speedLabel.Position = UDim2.new(0, 10, 0, 234)
 speedLabel.BackgroundTransparency = 1
 speedLabel.Text = "SPEED: 50%"
 speedLabel.TextColor3 = Color3.fromRGB(160, 160, 200)
@@ -399,7 +297,7 @@ speedLabel.Parent = mainFrame
 
 local sliderBG = Instance.new("Frame")
 sliderBG.Size = UDim2.new(1, -20, 0, 10)
-sliderBG.Position = UDim2.new(0, 10, 0, 402)
+sliderBG.Position = UDim2.new(0, 10, 0, 252)
 sliderBG.BackgroundColor3 = Color3.fromRGB(40, 40, 55)
 sliderBG.BorderSizePixel = 0
 sliderBG.Parent = mainFrame
@@ -416,6 +314,20 @@ local sliderFillCorner = Instance.new("UICorner")
 sliderFillCorner.CornerRadius = UDim.new(0, 5)
 sliderFillCorner.Parent = sliderFill
 
+local mode6Button = MakeButton("MODE 6  —  Dash Spam  [hold Q]", 272)
+
+local function SetToggle(btn, state, label)
+    if state then
+        btn.Text = "◼  " .. label
+        btn.BackgroundColor3 = Color3.fromRGB(0, 140, 60)
+        btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    else
+        btn.Text = "◻  " .. label
+        btn.BackgroundColor3 = Color3.fromRGB(35, 35, 45)
+        btn.TextColor3 = Color3.fromRGB(200, 200, 220)
+    end
+end
+
 local sliderDragging = false
 
 local function UpdateSlider(inputX)
@@ -425,7 +337,6 @@ local function UpdateSlider(inputX)
     CONFIG.SpeedPercent = math.floor(pct * 100)
     sliderFill.Size = UDim2.new(pct, 0, 1, 0)
     speedLabel.Text = "SPEED: " .. CONFIG.SpeedPercent .. "%"
-    if CONFIG.Mode5 then ApplySpeed() end
 end
 
 sliderBG.InputBegan:Connect(function(input)
@@ -447,28 +358,13 @@ game:GetService("UserInputService").InputEnded:Connect(function(input)
     end
 end)
 
-local function SetToggle(btn, state, label)
-    if state then
-        btn.Text = "◼  " .. label
-        btn.BackgroundColor3 = Color3.fromRGB(0, 140, 60)
-        btn.TextColor3 = Color3.fromRGB(255, 255, 255)
-    else
-        btn.Text = "◻  " .. label
-        btn.BackgroundColor3 = Color3.fromRGB(35, 35, 45)
-        btn.TextColor3 = Color3.fromRGB(200, 200, 220)
-    end
-end
-
 toggleButton.MouseButton1Click:Connect(function()
     mainFrame.Visible = not mainFrame.Visible
-    if mainFrame.Visible then RefreshPlayerList() end
 end)
 
 closeButton.MouseButton1Click:Connect(function()
     RestoreHitbox()
-    if CONFIG.Mode5 then
-        LocalHumanoid.WalkSpeed = BASE_SPEED
-    end
+    LocalHumanoid.WalkSpeed = BASE_SPEED
     HideAllESP()
     screenGui:Destroy()
 end)
@@ -487,9 +383,7 @@ end)
 mode3Button.MouseButton1Click:Connect(function()
     CONFIG.Mode3 = not CONFIG.Mode3
     SetToggle(mode3Button, CONFIG.Mode3, "MODE 3  —  ESP")
-    if not CONFIG.Mode3 then
-        HideAllESP()
-    end
+    if not CONFIG.Mode3 then HideAllESP() end
 end)
 
 mode4Button.MouseButton1Click:Connect(function()
@@ -505,7 +399,26 @@ end)
 mode5Button.MouseButton1Click:Connect(function()
     CONFIG.Mode5 = not CONFIG.Mode5
     SetToggle(mode5Button, CONFIG.Mode5, "MODE 5  —  Fast Run")
-    ApplySpeed()
+    if not CONFIG.Mode5 then
+        LocalHumanoid.WalkSpeed = BASE_SPEED
+    end
+end)
+
+mode6Button.MouseButton1Click:Connect(function()
+    CONFIG.Mode6 = not CONFIG.Mode6
+    SetToggle(mode6Button, CONFIG.Mode6, "MODE 6  —  Dash Spam  [hold Q]")
+end)
+
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if input.KeyCode == Enum.KeyCode.Q and CONFIG.Mode6 then
+        dashHolding = true
+    end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+    if input.KeyCode == Enum.KeyCode.Q then
+        dashHolding = false
+    end
 end)
 
 LocalPlayer.CharacterAdded:Connect(function(char)
@@ -513,30 +426,32 @@ LocalPlayer.CharacterAdded:Connect(function(char)
     LocalRoot = char:WaitForChild("HumanoidRootPart")
     LocalHumanoid = char:WaitForChild("Humanoid")
     OriginalLocalSize = nil
-    if CONFIG.Mode5 then ApplySpeed() end
+    dashHolding = false
 end)
 
 RunService.RenderStepped:Connect(function()
     if CONFIG.Mode1 then
         ExpandHitbox()
     end
+
     if CONFIG.Mode2 and LocalRoot then
         Mode2Func(LocalRoot.Position)
     end
-    RenderESP()
-    if LockedTarget then
-        local char = LockedTarget.Character
-        if not char then
-            LockedTarget = nil
-            SetLockLabel(nil)
-            RefreshPlayerList()
-        else
-            local hum = char:FindFirstChild("Humanoid")
-            if hum and hum.Health <= 0 then
-                LockedTarget = nil
-                SetLockLabel(nil)
-                RefreshPlayerList()
-            end
+
+    if CONFIG.Mode5 then
+        LocalHumanoid.WalkSpeed = GetTargetSpeed()
+    end
+
+    if CONFIG.Mode6 and dashHolding then
+        local now = tick()
+        if now - lastDashTime >= DASH_INTERVAL then
+            lastDashTime = now
+            VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Q, false, nil)
+            task.delay(0.02, function()
+                VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Q, false, nil)
+            end)
         end
     end
+
+    RenderESP()
 end)
