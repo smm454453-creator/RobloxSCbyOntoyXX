@@ -42,7 +42,6 @@ local lastAttackTick    = 0
 local farmConn          = nil
 local currentFarmTween  = nil
 
--- ── NET BIND ─────────────────────────────────────────────────────────────────
 local RegisterAttack = nil
 local CommF = nil
 
@@ -109,16 +108,13 @@ local LevelDatabase = {
     {Sea=3, MinLvl=3000, MaxLvl=9999, Island="Mirage Island",    MobFolder="Enemies", MobName="Demonic Soul",     QuestName="MirageQuest",     QuestNum=2, NPCCFrame=CFrame.new(-2800, 34, 3050)},
 }
 
--- ── AUTO FARM HELPERS ─────────────────────────────────────────────────────────
 local farmStatus = "Idle"
 
 local function GetFarmData()
-    -- safe access Level dari Data folder
     local ok, level = pcall(function()
         return LocalPlayer.Data.Level.Value
     end)
     if not ok then return nil end
-
     for _, data in ipairs(LevelDatabase) do
         if level >= data.MinLvl and level <= data.MaxLvl then
             return data, level
@@ -127,8 +123,9 @@ local function GetFarmData()
     return nil, level
 end
 
--- Noclip loop — dimatiin kalau Mode9 off
 local noclipConn = nil
+local MIN_FLY_Y  = 80
+
 local function StartNoclip()
     if noclipConn then return end
     noclipConn = RunService.Stepped:Connect(function()
@@ -145,11 +142,10 @@ local function StartNoclip()
         end
     end)
 end
+
 local function StopNoclip()
     if noclipConn then noclipConn:Disconnect() noclipConn = nil end
 end
-
-local MIN_FLY_Y = 80
 
 local function FlyTo(targetCFrame, onDone)
     if currentFarmTween then
@@ -160,9 +156,9 @@ local function FlyTo(targetCFrame, onDone)
     local root = char and char:FindFirstChild("HumanoidRootPart")
     if not root then if onDone then onDone() end return end
 
-    local destPos = targetCFrame.Position
-    local safeDestY = math.max(destPos.Y, MIN_FLY_Y)
-    local safeDest = CFrame.new(Vector3.new(destPos.X, safeDestY, destPos.Z))
+    local destPos  = targetCFrame.Position
+    local safeY    = math.max(destPos.Y, MIN_FLY_Y)
+    local safeDest = CFrame.new(Vector3.new(destPos.X, safeY, destPos.Z))
 
     if root.Position.Y < MIN_FLY_Y then
         root.CFrame = CFrame.new(root.Position.X, MIN_FLY_Y, root.Position.Z)
@@ -171,19 +167,19 @@ local function FlyTo(targetCFrame, onDone)
 
     local dist = (safeDest.Position - root.Position).Magnitude
     local dur  = math.clamp(dist / CONFIG.FarmFlySpeed, 0.3, 12)
-
-    local info  = TweenInfo.new(dur, Enum.EasingStyle.Linear)
+    local info = TweenInfo.new(dur, Enum.EasingStyle.Linear)
     local tween = TweenService:Create(root, info, {CFrame = safeDest})
     currentFarmTween = tween
-    tween.Completed:Connect(function()
+    tween.Completed:Connect(function(state)
         currentFarmTween = nil
-        if onDone then onDone() end
+        if state == Enum.PlaybackState.Completed then
+            if onDone then onDone() end
+        end
     end)
     tween:Play()
     return tween
 end
 
--- Cek quest aktif via PlayerGui (UI "Quest" yang visible)
 local function HasActiveQuest()
     local gui = LocalPlayer:FindFirstChild("PlayerGui")
     if not gui then return false end
@@ -193,14 +189,11 @@ local function HasActiveQuest()
     return questFrame and questFrame.Visible
 end
 
--- Cari mob terdekat yang masih hidup
 local function FindNearestMob(mobName, mobFolder)
     local root = LocalCharacter and LocalCharacter:FindFirstChild("HumanoidRootPart")
     if not root then return nil end
-
     local folder = Workspace:FindFirstChild(mobFolder or "Enemies")
     if not folder then return nil end
-
     local best, bestDist = nil, math.huge
     for _, mob in ipairs(folder:GetChildren()) do
         if mob.Name == mobName then
@@ -208,22 +201,16 @@ local function FindNearestMob(mobName, mobFolder)
             local mr  = mob:FindFirstChild("HumanoidRootPart")
             if hum and mr and hum.Health > 0 then
                 local dist = (mr.Position - root.Position).Magnitude
-                if dist < bestDist then
-                    bestDist = dist
-                    best = mob
-                end
+                if dist < bestDist then bestDist = dist best = mob end
             end
         end
     end
     return best
 end
 
--- Ultra fast attack — bypass animasi swing
 local function ExecuteAttack(mob)
     local char = LocalPlayer.Character
     if not char or not mob then return end
-
-    -- Auto-equip tool jika belum equipped
     if not char:FindFirstChildOfClass("Tool") then
         local tool = LocalPlayer.Backpack:FindFirstChildOfClass("Tool")
         if tool then
@@ -231,15 +218,10 @@ local function ExecuteAttack(mob)
             task.wait(0.1)
         end
     end
-
     local tool = char:FindFirstChildOfClass("Tool")
-
-    -- FireServer RegisterAttack
     if RegisterAttack then
         pcall(function() RegisterAttack:FireServer(mob:FindFirstChild("HumanoidRootPart")) end)
     end
-
-    -- firetouchinterest jika tool ada Handle dan mob ada Head
     if tool and tool:FindFirstChild("Handle") then
         local head = mob:FindFirstChild("Head")
         local mr   = mob:FindFirstChild("HumanoidRootPart")
@@ -258,7 +240,6 @@ local function ExecuteAttack(mob)
     end
 end
 
--- State machine enum
 local FARM_STATE = {
     IDLE       = "idle",
     GO_QUEST   = "go_quest",
@@ -267,19 +248,20 @@ local FARM_STATE = {
     ATTACK     = "attack",
     WAIT_SPAWN = "wait_spawn",
 }
-local farmState   = FARM_STATE.IDLE
-local waitingFly  = false
+
+local farmState      = FARM_STATE.IDLE
+local waitingFly     = false
+local waitSpawnTimer = 0
 
 local function StartFarm()
     if farmConn then farmConn:Disconnect() farmConn = nil end
-    farmState  = FARM_STATE.GO_QUEST
-    waitingFly = false
-    farmStatus = "Starting..."
+    farmState        = FARM_STATE.GO_QUEST
+    waitingFly       = false
+    waitSpawnTimer   = 0
+    farmStatus       = "Starting..."
 
-    farmConn = RunService.Heartbeat:Connect(function()
+    farmConn = RunService.Heartbeat:Connect(function(dt)
         if not CONFIG.Mode9 then return end
-
-        -- jangan proses kalau lagi nunggu tween fly
         if waitingFly then return end
 
         local char = LocalPlayer.Character
@@ -292,7 +274,6 @@ local function StartFarm()
             return
         end
 
-        -- ── STATE MACHINE ───────────────────────────────────────────
         if farmState == FARM_STATE.GO_QUEST then
             if HasActiveQuest() then
                 farmState  = FARM_STATE.GO_MOB
@@ -341,14 +322,13 @@ local function StartFarm()
                 farmStatus = "Quest selesai — ambil quest baru"
                 return
             end
-
             local mob = FindNearestMob(farmData.MobName, farmData.MobFolder)
             if not mob then
-                farmState  = FARM_STATE.WAIT_SPAWN
-                farmStatus = "Nunggu mob spawn..."
+                farmState      = FARM_STATE.WAIT_SPAWN
+                waitSpawnTimer = 0
+                farmStatus     = "Nunggu mob spawn..."
                 return
             end
-
             local mr = mob:FindFirstChild("HumanoidRootPart")
             if not mr then farmStatus = "Mob no root" return end
 
@@ -358,6 +338,10 @@ local function StartFarm()
             local dist    = (hoverCF.Position - root.Position).Magnitude
 
             if dist > 8 then
+                if currentFarmTween then
+                    currentFarmTween:Cancel()
+                    currentFarmTween = nil
+                end
                 farmStatus = "Terbang ke " .. farmData.MobName .. "..."
                 waitingFly = true
                 FlyTo(hoverCF, function()
@@ -374,24 +358,24 @@ local function StartFarm()
                 farmStatus = "Quest selesai — ambil quest baru"
                 return
             end
-
             local mob = FindNearestMob(farmData.MobName, farmData.MobFolder)
             if not mob or not mob:FindFirstChild("HumanoidRootPart") then
-                farmState  = FARM_STATE.WAIT_SPAWN
-                farmStatus = "Mob mati — nunggu respawn"
+                farmState      = FARM_STATE.WAIT_SPAWN
+                waitSpawnTimer = 0
+                farmStatus     = "Mob mati — nunggu respawn"
                 return
             end
-
             local mr     = mob.HumanoidRootPart
             local mobPos = mr.Position
             local hoverY = math.max(mobPos.Y + CONFIG.FarmHoverHeight, MIN_FLY_Y)
             root.CFrame  = CFrame.new(Vector3.new(mobPos.X, hoverY, mobPos.Z))
-
-            farmStatus = "Nyerang " .. farmData.MobName
+            farmStatus   = "Nyerang " .. farmData.MobName
             ExecuteAttack(mob)
 
         elseif farmState == FARM_STATE.WAIT_SPAWN then
-            task.wait(1.5)
+            waitSpawnTimer = waitSpawnTimer + dt
+            if waitSpawnTimer < 1.5 then return end
+            waitSpawnTimer = 0
             local mob = FindNearestMob(farmData.MobName, farmData.MobFolder)
             if mob then
                 farmState  = FARM_STATE.GO_MOB
@@ -405,12 +389,12 @@ local function StopFarm()
     if farmConn then farmConn:Disconnect() farmConn = nil end
     if currentFarmTween then currentFarmTween:Cancel() currentFarmTween = nil end
     StopNoclip()
-    farmState  = FARM_STATE.IDLE
-    farmStatus = "Idle"
-    waitingFly = false
+    farmState      = FARM_STATE.IDLE
+    farmStatus     = "Idle"
+    waitingFly     = false
+    waitSpawnTimer = 0
 end
 
--- ── SILENT AIM ───────────────────────────────────────────────────────────────
 local silentTarget = nil
 
 local function GetSilentTarget()
@@ -444,13 +428,12 @@ local function ApplySilentAim()
     silentTarget = GetSilentTarget()
     if not silentTarget then return end
     if not silentTarget.Parent then silentTarget = nil return end
-    local targetPos  = silentTarget.Position
-    local camPos     = Camera.CFrame.Position
-    local direction  = (targetPos - camPos).Unit
-    Camera.CFrame    = CFrame.new(camPos, camPos + direction)
+    local targetPos = silentTarget.Position
+    local camPos    = Camera.CFrame.Position
+    local direction = (targetPos - camPos).Unit
+    Camera.CFrame   = CFrame.new(camPos, camPos + direction)
 end
 
--- ── FAST ATTACK ───────────────────────────────────────────────────────────────
 local function GetAttackInterval()
     return 1 / math.max(CONFIG.AttackHPS, 1)
 end
@@ -491,15 +474,16 @@ local function StopFastAttack()
     if fastAttackConn then fastAttackConn:Disconnect() fastAttackConn = nil end
 end
 
--- ── HITBOX ────────────────────────────────────────────────────────────────────
 local function PctToSize(pct)
     return MIN_HITBOX + (MAX_HITBOX - MIN_HITBOX) * ((pct - 1) / 99)
 end
+
 local function ExpandHitbox()
     if not OriginalLocalSize then OriginalLocalSize = LocalRoot.Size end
     local sz = PctToSize(CONFIG.HitboxPercent)
     LocalRoot.Size = Vector3.new(sz, sz, sz)
 end
+
 local function RestoreHitbox()
     if OriginalLocalSize then
         LocalRoot.Size = OriginalLocalSize
@@ -521,7 +505,6 @@ local function Mode2Func(pos)
     game:GetService("Debris"):AddItem(p, 0.1)
 end
 
--- ── DASH ─────────────────────────────────────────────────────────────────────
 local function SimulateDash()
     pcall(function()
         game:GetService("VirtualInputManager"):SendKeyEvent(true, Enum.KeyCode.Q, false, game)
@@ -560,7 +543,6 @@ UserInputService.InputEnded:Connect(function(input)
     if input.KeyCode == Enum.KeyCode.Q then dashHolding = false end
 end)
 
--- ── ESP ───────────────────────────────────────────────────────────────────────
 local function CreateESP(player)
     local esp = {
         Box       = Drawing.new("Square"),
@@ -644,7 +626,6 @@ local function RenderESP()
     end
 end
 
--- ── GUI ───────────────────────────────────────────────────────────────────────
 local screenGui = Instance.new("ScreenGui")
 screenGui.Name = "Ontoy_Hub"; screenGui.ResetOnSpawn = false
 screenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
@@ -955,9 +936,6 @@ local function MakeSliderRow(parent, label, displayMin, displayMax, initPct, uni
     return row
 end
 
--- ── PAGES ─────────────────────────────────────────────────────────────────────
-
--- COMBAT PAGE
 local combatPage = MakePage(); pages["combat"] = combatPage
 local combatBtn  = MakeSidebarBtn("⚔", "Combat", "combat")
 
@@ -988,14 +966,12 @@ MakeSliderRow(combatPage, "Attack HPS", 1, 30,
     (CONFIG.AttackHPS - 1) / 29, " HPS",
     function(val) CONFIG.AttackHPS = val end)
 
--- VISUAL PAGE
 local visualPage = MakePage(); pages["visual"] = visualPage
 local visualBtn  = MakeSidebarBtn("👁", "Visual", "visual")
 MakeSectionLabel(visualPage, "ESP")
 local _, espGet, _    = MakeToggleRow(visualPage, "ESP",     "Player boxes, health, distance")
 local _, tracerGet, _ = MakeToggleRow(visualPage, "Tracers", "Lines from screen to players")
 
--- MOVEMENT PAGE
 local movePage    = MakePage(); pages["movement"] = movePage
 local moveBtn     = MakeSidebarBtn("🏃", "Movement", "movement")
 MakeSectionLabel(movePage, "SPEED")
@@ -1004,11 +980,9 @@ MakeSliderRow(movePage, "Speed", BASE_SPEED, MAX_SPEED, 0.5, " ws", function(val
     CONFIG.SpeedPercent = pct * 100
 end)
 
--- FARM PAGE ──────────────────────────────────────────────────────────────────
 local farmPage = MakePage(); pages["farm"] = farmPage
 local farmBtn  = MakeSidebarBtn("🌾", "Auto Farm", "farm")
 
--- Status card (live update)
 local statusCard = Instance.new("Frame", farmPage)
 statusCard.Size = UDim2.new(1, -8, 0, 52); statusCard.BackgroundColor3 = REDZ.BG2
 statusCard.BorderSizePixel = 0
@@ -1033,7 +1007,6 @@ statusText.BackgroundTransparency = 1; statusText.Text = "Idle"
 statusText.TextColor3 = REDZ.TextMain; statusText.Font = Enum.Font.Gotham; statusText.TextSize = 11
 statusText.TextXAlignment = Enum.TextXAlignment.Left
 
--- Level info card
 local levelCard = Instance.new("Frame", farmPage)
 levelCard.Size = UDim2.new(1, -8, 0, 52); levelCard.BackgroundColor3 = REDZ.BG2
 levelCard.BorderSizePixel = 0
@@ -1064,7 +1037,6 @@ MakeSliderRow(farmPage, "Hover Height", 2, 20,
     (CONFIG.FarmHoverHeight - 2) / 18, " stud",
     function(val) CONFIG.FarmHoverHeight = val end)
 
--- Update status card tiap frame
 RunService.Heartbeat:Connect(function()
     local _, level = GetFarmData()
     local farmData = GetFarmData()
@@ -1092,7 +1064,6 @@ RunService.Heartbeat:Connect(function()
     end
 end)
 
--- ── WIRE ─────────────────────────────────────────────────────────────────────
 local function WireToggle(getter, configKey, onEnable, onDisable)
     RunService.Heartbeat:Connect(function()
         local s = getter()
@@ -1132,7 +1103,6 @@ WireToggle(farmGet,    "Mode9",
     end
 )
 
--- Noclip toggle terpisah (bisa hidup tanpa farm)
 WireToggle(noclipGet, "Mode9",
     function() if not CONFIG.Mode9 then StartNoclip() end end,
     function() if not CONFIG.Mode9 then StopNoclip()  end end
@@ -1162,16 +1132,15 @@ LocalPlayer.CharacterAdded:Connect(function(char)
     LocalRoot      = char:WaitForChild("HumanoidRootPart")
     LocalHumanoid  = char:WaitForChild("Humanoid")
     OriginalLocalSize = nil; dashHolding = false; silentTarget = nil
-    -- reset farm state setelah respawn
     if CONFIG.Mode9 then
-        farmState  = FARM_STATE.GO_QUEST
-        waitingFly = false
-        farmStatus = "Respawned — restarting"
+        farmState      = FARM_STATE.GO_QUEST
+        waitingFly     = false
+        waitSpawnTimer = 0
+        farmStatus     = "Respawned — restarting"
     end
     if CONFIG.Mode5 then LocalHumanoid.WalkSpeed = GetTargetSpeed() end
 end)
 
--- ── RENDER LOOP ───────────────────────────────────────────────────────────────
 RunService.RenderStepped:Connect(function()
     if CONFIG.Mode1 then ExpandHitbox() end
     if CONFIG.Mode2 and LocalRoot then Mode2Func(LocalRoot.Position) end
