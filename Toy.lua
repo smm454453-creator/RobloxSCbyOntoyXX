@@ -131,7 +131,10 @@ local function StartNoclip()
 end
 
 local function StopNoclip()
-	if CONFIG.Mode9 or CONFIG.Mode10 then return end
+	-- FIX: pisah cek — Mode9 dan Mode10 independen
+	if CONFIG.Mode9 and CONFIG.Mode10 then return end
+	if CONFIG.Mode9 and not CONFIG.Mode10 then return end
+	if not CONFIG.Mode9 and CONFIG.Mode10 then return end
 	if noclipConn then noclipConn:Disconnect() noclipConn = nil end
 end
 
@@ -142,11 +145,23 @@ local function SetPlatformStand(state)
 end
 
 local function FlyTo(targetCFrame, onDone)
+	-- FIX: guard ketat sebelum tween
+	if not targetCFrame then
+		if onDone then onDone() end
+		return
+	end
+	local destPos = targetCFrame.Position
+	if destPos == Vector3.zero then
+		if onDone then onDone() end
+		return
+	end
+
 	if currentFarmTween then
 		currentFarmTween:Cancel()
 		currentFarmTween = nil
 	end
 
+	-- FIX: fresh fetch setiap kali FlyTo dipanggil
 	local char = LocalPlayer.Character
 	local root = char and char:FindFirstChild("HumanoidRootPart")
 	if not root then
@@ -154,7 +169,6 @@ local function FlyTo(targetCFrame, onDone)
 		return
 	end
 
-	local destPos  = targetCFrame.Position
 	local safeY    = math.max(destPos.Y, MIN_FLY_Y)
 	local safeDest = CFrame.new(Vector3.new(destPos.X, safeY, destPos.Z))
 
@@ -166,7 +180,8 @@ local function FlyTo(targetCFrame, onDone)
 		if not root then if onDone then onDone() end return end
 	end
 
-	SetPlatformStand(true)
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	if hum then hum.PlatformStand = true end
 
 	local dist  = (safeDest.Position - root.Position).Magnitude
 	local dur   = math.clamp(dist / CONFIG.FarmFlySpeed, 0.3, 12)
@@ -197,13 +212,16 @@ local function HasActiveQuest()
 end
 
 local function FindNearestMob(mobName, mobFolder)
-	local root = LocalCharacter and LocalCharacter:FindFirstChild("HumanoidRootPart")
+	-- FIX: fresh fetch, tidak pakai LocalCharacter global
+	local char = LocalPlayer.Character
+	local root = char and char:FindFirstChild("HumanoidRootPart")
 	if not root then return nil end
 	local folder = Workspace:FindFirstChild(mobFolder or "Enemies")
 	if not folder then return nil end
 	local best, bestDist = nil, math.huge
 	local lowerTarget = string.lower(mobName)
 	for _, mob in ipairs(folder:GetChildren()) do
+		-- FIX: fuzzy match, bukan exact
 		if string.find(string.lower(mob.Name), lowerTarget, 1, true) then
 			local hum = mob:FindFirstChild("Humanoid")
 			local mr  = mob:FindFirstChild("HumanoidRootPart")
@@ -264,6 +282,8 @@ local waitSpawnTimer = 0
 
 local function StartFarm()
 	if farmConn then farmConn:Disconnect() farmConn = nil end
+	-- FIX: cancel tween lama sebelum start baru
+	if currentFarmTween then currentFarmTween:Cancel() currentFarmTween = nil end
 	farmState      = FARM_STATE.GO_QUEST
 	waitingFly     = false
 	waitSpawnTimer = 0
@@ -273,9 +293,16 @@ local function StartFarm()
 		if not CONFIG.Mode9 then return end
 		if waitingFly then return end
 
+		-- FIX: fresh fetch setiap frame, bukan LocalCharacter global
 		local char = LocalPlayer.Character
 		local root = char and char:FindFirstChild("HumanoidRootPart")
-		if not root then return end
+		local hum  = char and char:FindFirstChildOfClass("Humanoid")
+
+		-- FIX: kalau mati/respawn, skip — jangan crash
+		if not char or not root or not hum or hum.Health <= 0 then
+			if currentFarmTween then currentFarmTween:Cancel() currentFarmTween = nil end
+			return
+		end
 
 		local farmData, level = GetFarmData()
 		if not farmData then
@@ -289,7 +316,13 @@ local function StartFarm()
 				farmStatus = "Quest aktif — hunting"
 				return
 			end
-			local dist = (farmData.NPCCFrame.Position - root.Position).Magnitude
+			-- FIX: validasi NPCCFrame sebelum dipakai
+			local npcPos = farmData.NPCCFrame and farmData.NPCCFrame.Position
+			if not npcPos or npcPos == Vector3.zero then
+				farmStatus = "NPC position invalid"
+				return
+			end
+			local dist = (npcPos - root.Position).Magnitude
 			if dist > 20 then
 				farmStatus = "Terbang ke NPC quest..."
 				waitingFly = true
@@ -307,7 +340,9 @@ local function StartFarm()
 				farmStatus = "Quest diterima!"
 				return
 			end
-			local npcDist = (farmData.NPCCFrame.Position - root.Position).Magnitude
+			local npcPos = farmData.NPCCFrame and farmData.NPCCFrame.Position
+			if not npcPos then farmState = FARM_STATE.GO_QUEST return end
+			local npcDist = (npcPos - root.Position).Magnitude
 			if npcDist > 30 then
 				farmState = FARM_STATE.GO_QUEST
 				return
@@ -342,6 +377,8 @@ local function StartFarm()
 			if not mr then farmStatus = "Mob no root" return end
 
 			local mobPos  = mr.Position
+			-- FIX: guard mobPos bukan zero
+			if mobPos == Vector3.zero then farmStatus = "Mob pos invalid" return end
 			local hoverY  = math.max(mobPos.Y + CONFIG.FarmHoverHeight, MIN_FLY_Y)
 			local hoverCF = CFrame.new(Vector3.new(mobPos.X, hoverY, mobPos.Z))
 			local dist    = (hoverCF.Position - root.Position).Magnitude
@@ -372,8 +409,11 @@ local function StartFarm()
 			end
 			local mr     = mob.HumanoidRootPart
 			local mobPos = mr.Position
+			if mobPos == Vector3.zero then farmStatus = "Mob pos invalid" return end
 			local hoverY = math.max(mobPos.Y + CONFIG.FarmHoverHeight, MIN_FLY_Y)
-			SetPlatformStand(true)
+			-- FIX: fresh hum fetch untuk PlatformStand
+			local freshHum = char:FindFirstChildOfClass("Humanoid")
+			if freshHum then freshHum.PlatformStand = true end
 			root.CFrame  = CFrame.new(Vector3.new(mobPos.X, hoverY, mobPos.Z))
 			root.AssemblyLinearVelocity = Vector3.zero
 			farmStatus   = "Nyerang " .. farmData.MobName
@@ -397,11 +437,13 @@ local function StopFarm()
 	if currentFarmTween then currentFarmTween:Cancel() currentFarmTween = nil end
 	local char = LocalPlayer.Character
 	local root = char and char:FindFirstChild("HumanoidRootPart")
-	if root then
-		root.AssemblyLinearVelocity = Vector3.zero
+	if root then root.AssemblyLinearVelocity = Vector3.zero end
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	if hum then hum.PlatformStand = false end
+	-- FIX: StopNoclip hanya kalau Mode10 juga off
+	if not CONFIG.Mode10 then
+		if noclipConn then noclipConn:Disconnect() noclipConn = nil end
 	end
-	SetPlatformStand(false)
-	StopNoclip()
 	farmState      = FARM_STATE.IDLE
 	farmStatus     = "Idle"
 	waitingFly     = false
@@ -450,17 +492,21 @@ end
 
 local function GetFastTarget()
 	if silentTarget and silentTarget.Parent then return silentTarget end
+	-- FIX: fresh fetch LocalRoot
+	local char = LocalPlayer.Character
+	local lroot = char and char:FindFirstChild("HumanoidRootPart")
+	if not lroot then return nil end
 	local best, bestDist = nil, math.huge
 	for _, player in ipairs(Players:GetPlayers()) do
 		if player == LocalPlayer then continue end
-		local char = player.Character
-		if not char then continue end
-		local root = char:FindFirstChild("HumanoidRootPart")
-		local hum  = char:FindFirstChild("Humanoid")
+		local pchar = player.Character
+		if not pchar then continue end
+		local root = pchar:FindFirstChild("HumanoidRootPart")
+		local hum  = pchar:FindFirstChild("Humanoid")
 		if not (root and hum and hum.Health > 0) then continue end
 		local _, onScreen = Camera:WorldToScreenPoint(root.Position)
 		if not onScreen then continue end
-		local dist = (root.Position - LocalRoot.Position).Magnitude
+		local dist = (root.Position - lroot.Position).Magnitude
 		if dist < bestDist then bestDist = dist best = root end
 	end
 	return best
@@ -489,14 +535,19 @@ local function PctToSize(pct)
 end
 
 local function ExpandHitbox()
-	if not OriginalLocalSize then OriginalLocalSize = LocalRoot.Size end
+	local char = LocalPlayer.Character
+	local root = char and char:FindFirstChild("HumanoidRootPart")
+	if not root then return end
+	if not OriginalLocalSize then OriginalLocalSize = root.Size end
 	local sz = PctToSize(CONFIG.HitboxPercent)
-	LocalRoot.Size = Vector3.new(sz, sz, sz)
+	root.Size = Vector3.new(sz, sz, sz)
 end
 
 local function RestoreHitbox()
 	if OriginalLocalSize then
-		LocalRoot.Size = OriginalLocalSize
+		local char = LocalPlayer.Character
+		local root = char and char:FindFirstChild("HumanoidRootPart")
+		if root then root.Size = OriginalLocalSize end
 		OriginalLocalSize = nil
 	end
 end
@@ -601,6 +652,10 @@ fovCircle.Visible   = false
 
 local function RenderESP()
 	if not CONFIG.Mode3 then HideAllESP() return end
+	-- FIX: fresh LocalRoot untuk distance calc
+	local char  = LocalPlayer.Character
+	local lroot = char and char:FindFirstChild("HumanoidRootPart")
+	if not lroot then HideAllESP() return end
 	for player, esp in pairs(ESP_Objects) do
 		local character = player.Character
 		if not character then HideESP(esp) continue end
@@ -621,7 +676,7 @@ local function RenderESP()
 		esp.HealthBar.Position = Vector2.new(boxPos.X - 7, boxPos.Y + (height - barH))
 		esp.HealthBar.Color    = Color3.fromRGB(math.floor(255*(1-hpR)), math.floor(255*hpR), 0)
 		esp.HealthBar.Visible  = true
-		local dist = math.floor((root.Position - LocalRoot.Position).Magnitude)
+		local dist = math.floor((root.Position - lroot.Position).Magnitude)
 		esp.NameTag.Text     = player.Name.." ["..math.floor(hum.Health).."hp | "..dist.."m]"
 		esp.NameTag.Position = Vector2.new(rs.X, boxPos.Y - 16)
 		esp.NameTag.Visible  = true
@@ -1073,20 +1128,30 @@ WireToggle(espGet,     "Mode3", nil, HideAllESP)
 WireToggle(tracerGet,  "Mode4", nil, function()
 	for _, esp in pairs(ESP_Objects) do esp.Line.Visible = false end
 end)
-WireToggle(speedGet,   "Mode5", nil, function() LocalHumanoid.WalkSpeed = BASE_SPEED end)
+WireToggle(speedGet,   "Mode5", nil, function()
+	local char = LocalPlayer.Character
+	local hum  = char and char:FindFirstChildOfClass("Humanoid")
+	if hum then hum.WalkSpeed = BASE_SPEED end
+end)
 WireToggle(dashGet,    "Mode6", StartDashLoop, StopDashLoop)
 WireToggle(silentGet,  "Mode7", nil, function()
 	silentTarget = nil
 	fovCircle.Visible = false
 end)
 WireToggle(fastAtkGet, "Mode8", StartFastAttack, StopFastAttack)
-WireToggle(farmGet,    "Mode9",
+-- FIX: Mode9 dan Mode10 share noclipConn tapi punya logika stop independen
+WireToggle(farmGet, "Mode9",
 	function() StartNoclip() StartFarm() farmStatus = "Starting..." end,
-	function() StopFarm() farmStatus = "Idle" end
+	function() StopFarm() end
 )
 WireToggle(noclipGet, "Mode10",
 	function() StartNoclip() end,
-	function() StopNoclip() end
+	function()
+		-- FIX: hanya stop noclip kalau farm juga off
+		if not CONFIG.Mode9 then
+			if noclipConn then noclipConn:Disconnect() noclipConn = nil end
+		end
+	end
 )
 
 combatBtn.MouseButton1Click:Connect(function() SetActivePage("combat")   end)
@@ -1103,8 +1168,12 @@ minimizeBtn.MouseButton1Click:Connect(function()
 end)
 
 closeBtn.MouseButton1Click:Connect(function()
-	RestoreHitbox(); LocalHumanoid.WalkSpeed = BASE_SPEED
+	RestoreHitbox()
+	local char = LocalPlayer.Character
+	local hum  = char and char:FindFirstChildOfClass("Humanoid")
+	if hum then hum.WalkSpeed = BASE_SPEED end
 	HideAllESP(); StopDashLoop(); StopFastAttack(); StopFarm()
+	if noclipConn then noclipConn:Disconnect() noclipConn = nil end
 	fovCircle:Remove(); screenGui:Destroy()
 end)
 
@@ -1113,19 +1182,27 @@ LocalPlayer.CharacterAdded:Connect(function(char)
 	LocalRoot      = char:WaitForChild("HumanoidRootPart")
 	LocalHumanoid  = char:WaitForChild("Humanoid")
 	OriginalLocalSize = nil; dashHolding = false; silentTarget = nil
+	-- FIX: cancel tween lama, reset state bersih
+	if currentFarmTween then currentFarmTween:Cancel() currentFarmTween = nil end
+	waitingFly = false
 	if CONFIG.Mode9 then
 		farmState      = FARM_STATE.GO_QUEST
-		waitingFly     = false
 		waitSpawnTimer = 0
 		farmStatus     = "Respawned — restarting"
 	end
-	if CONFIG.Mode5 then LocalHumanoid.WalkSpeed = GetTargetSpeed() end
+	if CONFIG.Mode5 then
+		local hum = char:FindFirstChildOfClass("Humanoid")
+		if hum then hum.WalkSpeed = GetTargetSpeed() end
+	end
 end)
 
 RunService.RenderStepped:Connect(function()
-	if CONFIG.Mode1 then ExpandHitbox() end
-	if CONFIG.Mode2 and LocalRoot then Mode2Func(LocalRoot.Position) end
-	if CONFIG.Mode5 then LocalHumanoid.WalkSpeed = GetTargetSpeed() end
+	local char  = LocalPlayer.Character
+	local root  = char and char:FindFirstChild("HumanoidRootPart")
+	local hum   = char and char:FindFirstChildOfClass("Humanoid")
+	if CONFIG.Mode1 and root then ExpandHitbox() end
+	if CONFIG.Mode2 and root then Mode2Func(root.Position) end
+	if CONFIG.Mode5 and hum  then hum.WalkSpeed = GetTargetSpeed() end
 	if CONFIG.Mode7 then
 		ApplySilentAim()
 		local vp = Camera.ViewportSize
