@@ -39,14 +39,18 @@ local function SnapToTarget()
     local humanoid = LockedTarget.Character:FindFirstChild("Humanoid")
     if not targetRoot or not humanoid or humanoid.Health <= 0 then return end
 
-    local direction = (targetRoot.Position - LocalRoot.Position).Unit
-    LocalRoot.CFrame = CFrame.new(LocalRoot.Position, LocalRoot.Position + Vector3.new(direction.X, 0, direction.Z))
+    local targetPos = targetRoot.Position
+    local myPos = LocalRoot.Position
+    local direction = (targetPos - myPos).Unit
+    local flatDir = Vector3.new(direction.X, 0, direction.Z)
+
+    LocalRoot.CFrame = CFrame.new(myPos, myPos + flatDir)
+    Camera.CFrame = CFrame.new(Camera.CFrame.Position, targetPos)
 end
 
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
     if gameProcessed then return end
     if not CONFIG.Mode1 or not LockedTarget then return end
-
     for _, key in ipairs(AbilityKeys) do
         if input.KeyCode == key then
             SnapToTarget()
@@ -194,7 +198,6 @@ local function RenderESP()
     end
 end
 
--- GUI
 local screenGui = Instance.new("ScreenGui")
 screenGui.Name = "Ontoy_Stress"
 screenGui.ResetOnSpawn = false
@@ -270,7 +273,6 @@ local c3 = Instance.new("UICorner")
 c3.CornerRadius = UDim.new(0, 6)
 c3.Parent = closeButton
 
--- Target selector
 local targetLabel = Instance.new("TextLabel")
 targetLabel.Size = UDim2.new(1, -20, 0, 16)
 targetLabel.Position = UDim2.new(0, 10, 0, 44)
