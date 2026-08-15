@@ -14,9 +14,9 @@ local LocalHumanoid = LocalCharacter:WaitForChild("Humanoid")
 local CONFIG = {
     Mode1 = false, Mode2 = false, Mode3 = false,
     Mode4 = false, Mode5 = false, Mode6 = false,
-    Mode7 = false, -- Silent Aim
-    Mode8 = false, -- Fast Attack
-    Mode9 = false, -- Auto Farm
+    Mode7 = false,
+    Mode8 = false,
+    Mode9 = false,
     HitboxPercent   = 1,
     SpeedPercent    = 50,
     Radius          = 15,
@@ -66,53 +66,51 @@ task.spawn(function()
     end)
 end)
 
--- ── LEVEL DATABASE ────────────────────────────────────────────────────────────
--- Edit sesuai kebutuhan — tambah entry buat Sea 2/3
 local LevelDatabase = {
-    -- SEA 1
-    {MinLvl=1,   MaxLvl=9,   Island="Starter Island", MobFolder="Enemies",
-     MobName="Bandit",        QuestName="BanditQuest",  QuestNum=1,
-     NPCCFrame=CFrame.new(1060, 16, 1547)},
-
-    {MinLvl=10,  MaxLvl=14,  Island="Jungle",          MobFolder="Enemies",
-     MobName="Monkey",        QuestName="JungleQuest",  QuestNum=1,
-     NPCCFrame=CFrame.new(-1600, 36, 153)},
-
-    {MinLvl=15,  MaxLvl=29,  Island="Jungle",          MobFolder="Enemies",
-     MobName="Gorilla",       QuestName="JungleQuest",  QuestNum=2,
-     NPCCFrame=CFrame.new(-1600, 36, 153)},
-
-    {MinLvl=30,  MaxLvl=39,  Island="Pirate Village",  MobFolder="Enemies",
-     MobName="Pirate",        QuestName="PirateQuest",  QuestNum=1,
-     NPCCFrame=CFrame.new(-1140, 4, 3828)},
-
-    {MinLvl=40,  MaxLvl=59,  Island="Desert",          MobFolder="Enemies",
-     MobName="Desert Bandit", QuestName="DesertQuest",  QuestNum=1,
-     NPCCFrame=CFrame.new(894, 6, 4386)},
-
-    {MinLvl=60,  MaxLvl=74,  Island="Frozen Village",  MobFolder="Enemies",
-     MobName="Snow Bandit",   QuestName="SnowQuest",    QuestNum=1,
-     NPCCFrame=CFrame.new(-1332, 5, -3050)},
-
-    {MinLvl=75,  MaxLvl=99,  Island="Marine Fortress",  MobFolder="Enemies",
-     MobName="Marine",        QuestName="MarineQuest",  QuestNum=1,
-     NPCCFrame=CFrame.new(4240, 33, 716)},
-
-    {MinLvl=100, MaxLvl=149, Island="Skylands",          MobFolder="Enemies",
-     MobName="Sky Bandit",    QuestName="SkyQuest",     QuestNum=1,
-     NPCCFrame=CFrame.new(498, 858, -1301)},
-
-    {MinLvl=150, MaxLvl=199, Island="Prison",            MobFolder="Enemies",
-     MobName="Prisoner",      QuestName="PrisonQuest",  QuestNum=1,
-     NPCCFrame=CFrame.new(27, 73, -3312)},
-
-    {MinLvl=200, MaxLvl=299, Island="Colosseum",         MobFolder="Enemies",
-     MobName="Toga Warrior",  QuestName="ColosseumQuest",QuestNum=1,
-     NPCCFrame=CFrame.new(-2027, 7, -3009)},
+    {Sea=1, MinLvl=1,    MaxLvl=9,    Island="Starter Island",   MobFolder="Enemies", MobName="Bandit",           QuestName="BanditQuest",     QuestNum=1, NPCCFrame=CFrame.new(977.8, 6.4, 1574.1)},
+    {Sea=1, MinLvl=10,   MaxLvl=14,   Island="Jungle",           MobFolder="Enemies", MobName="Monkey",           QuestName="JungleQuest",     QuestNum=1, NPCCFrame=CFrame.new(-1600, 36, 153)},
+    {Sea=1, MinLvl=15,   MaxLvl=29,   Island="Jungle",           MobFolder="Enemies", MobName="Gorilla",          QuestName="JungleQuest",     QuestNum=2, NPCCFrame=CFrame.new(-1600, 36, 153)},
+    {Sea=1, MinLvl=30,   MaxLvl=59,   Island="Pirate Village",   MobFolder="Enemies", MobName="Pirate",           QuestName="PirateQuest",     QuestNum=1, NPCCFrame=CFrame.new(-1142.2, 4, 3828.9)},
+    {Sea=1, MinLvl=60,   MaxLvl=89,   Island="Desert",           MobFolder="Enemies", MobName="Desert Bandit",    QuestName="DesertQuest",     QuestNum=1, NPCCFrame=CFrame.new(924.5, 5.5, 4446.3)},
+    {Sea=1, MinLvl=90,   MaxLvl=119,  Island="Frozen Village",   MobFolder="Enemies", MobName="Snow Bandit",      QuestName="SnowQuest",       QuestNum=1, NPCCFrame=CFrame.new(-1332, 5, -3050)},
+    {Sea=1, MinLvl=120,  MaxLvl=149,  Island="Marine Fortress",  MobFolder="Enemies", MobName="Marine",           QuestName="MarineQuest",     QuestNum=1, NPCCFrame=CFrame.new(4240, 33, 716)},
+    {Sea=1, MinLvl=150,  MaxLvl=174,  Island="Skylands",         MobFolder="Enemies", MobName="Sky Bandit",       QuestName="SkyQuest",        QuestNum=1, NPCCFrame=CFrame.new(498, 858, -1301)},
+    {Sea=1, MinLvl=175,  MaxLvl=209,  Island="Prison",           MobFolder="Enemies", MobName="Prisoner",         QuestName="PrisonQuest",     QuestNum=1, NPCCFrame=CFrame.new(27, 73, -3312)},
+    {Sea=1, MinLvl=210,  MaxLvl=249,  Island="Colosseum",        MobFolder="Enemies", MobName="Toga Warrior",     QuestName="ColosseumQuest",  QuestNum=1, NPCCFrame=CFrame.new(-2027, 7, -3009)},
+    {Sea=1, MinLvl=250,  MaxLvl=299,  Island="Magma Village",    MobFolder="Enemies", MobName="Magma Ninja",      QuestName="MagmaQuest",      QuestNum=1, NPCCFrame=CFrame.new(450, 126, -4800)},
+    {Sea=1, MinLvl=300,  MaxLvl=374,  Island="Upper Skylands",   MobFolder="Enemies", MobName="Sky Pirate",       QuestName="UpperSkyQuest",   QuestNum=1, NPCCFrame=CFrame.new(-2418, 1437, 1887)},
+    {Sea=1, MinLvl=375,  MaxLvl=424,  Island="Fountain City",    MobFolder="Enemies", MobName="Galley Pirate",    QuestName="FountainQuest",   QuestNum=1, NPCCFrame=CFrame.new(-779.8, 72.5, -3463.8)},
+    {Sea=1, MinLvl=425,  MaxLvl=474,  Island="Fountain City",    MobFolder="Enemies", MobName="Galley Pirate",    QuestName="FountainQuest",   QuestNum=2, NPCCFrame=CFrame.new(-779.8, 72.5, -3463.8)},
+    {Sea=1, MinLvl=475,  MaxLvl=524,  Island="Elegant Speedster", MobFolder="Enemies", MobName="Dark Master",     QuestName="DarkMasterQuest", QuestNum=1, NPCCFrame=CFrame.new(-1463, 92, 3846)},
+    {Sea=1, MinLvl=525,  MaxLvl=624,  Island="Cafe",             MobFolder="Enemies", MobName="Assassin",         QuestName="AssassinQuest",   QuestNum=1, NPCCFrame=CFrame.new(3581.2, 33.8, 3281.6)},
+    {Sea=2, MinLvl=625,  MaxLvl=699,  Island="Kingdom of Rose",  MobFolder="Enemies", MobName="Factory Staff",    QuestName="RoseQuest",       QuestNum=1, NPCCFrame=CFrame.new(-324, 68, -1437.1)},
+    {Sea=2, MinLvl=700,  MaxLvl=774,  Island="Kingdom of Rose",  MobFolder="Enemies", MobName="Citizen",          QuestName="RoseQuest",       QuestNum=2, NPCCFrame=CFrame.new(-324, 68, -1437.1)},
+    {Sea=2, MinLvl=775,  MaxLvl=849,  Island="Green Zone",       MobFolder="Enemies", MobName="Saber Expert",     QuestName="GreenZoneQuest",  QuestNum=1, NPCCFrame=CFrame.new(-4900, 28, -1600)},
+    {Sea=2, MinLvl=850,  MaxLvl=924,  Island="Graveyard",        MobFolder="Enemies", MobName="Zombie",           QuestName="GraveyardQuest",  QuestNum=1, NPCCFrame=CFrame.new(5212, 17, 3585)},
+    {Sea=2, MinLvl=925,  MaxLvl=999,  Island="Snow Mountain",    MobFolder="Enemies", MobName="Snow Lurker",      QuestName="SnowMtnQuest",    QuestNum=1, NPCCFrame=CFrame.new(-4000, 487, 4200)},
+    {Sea=2, MinLvl=1000, MaxLvl=1049, Island="Hot and Cold",     MobFolder="Enemies", MobName="Snow Demon",       QuestName="HotColdQuest",    QuestNum=1, NPCCFrame=CFrame.new(-2090, 96, -2505)},
+    {Sea=2, MinLvl=1050, MaxLvl=1099, Island="Hot and Cold",     MobFolder="Enemies", MobName="Ice Demon",        QuestName="HotColdQuest",    QuestNum=2, NPCCFrame=CFrame.new(-2090, 96, -2505)},
+    {Sea=2, MinLvl=1100, MaxLvl=1174, Island="Cursed Ship",      MobFolder="Enemies", MobName="Ship Deckhand",    QuestName="CursedShipQuest", QuestNum=1, NPCCFrame=CFrame.new(-4900, 28, 830)},
+    {Sea=2, MinLvl=1175, MaxLvl=1249, Island="Ice Castle",       MobFolder="Enemies", MobName="Ice Cream Staff",  QuestName="IceCastleQuest",  QuestNum=1, NPCCFrame=CFrame.new(550, 207, -5400)},
+    {Sea=2, MinLvl=1250, MaxLvl=1349, Island="Forgotten Island", MobFolder="Enemies", MobName="Diablo",           QuestName="ForgottenQuest",  QuestNum=1, NPCCFrame=CFrame.new(1500, 16, -2770)},
+    {Sea=2, MinLvl=1350, MaxLvl=1474, Island="Labyrinth",        MobFolder="Enemies", MobName="Labyrinth Monster",QuestName="LabyrinthQuest",  QuestNum=1, NPCCFrame=CFrame.new(-5680, 285, -970)},
+    {Sea=2, MinLvl=1475, MaxLvl=1574, Island="Labyrinth",        MobFolder="Enemies", MobName="Labyrinth Monster",QuestName="LabyrinthQuest",  QuestNum=2, NPCCFrame=CFrame.new(-5680, 285, -970)},
+    {Sea=3, MinLvl=1575, MaxLvl=1674, Island="Port Town",        MobFolder="Enemies", MobName="Marine Lieutnant", QuestName="PortTownQuest",   QuestNum=1, NPCCFrame=CFrame.new(-4033, 35, -1714)},
+    {Sea=3, MinLvl=1675, MaxLvl=1774, Island="Hydra Island",     MobFolder="Enemies", MobName="Giant Squid",      QuestName="HydraQuest",      QuestNum=1, NPCCFrame=CFrame.new(1299, 70, 1040)},
+    {Sea=3, MinLvl=1775, MaxLvl=1874, Island="Great Tree",       MobFolder="Enemies", MobName="Forest Pirate",    QuestName="GreatTreeQuest",  QuestNum=1, NPCCFrame=CFrame.new(576, 85, -5900)},
+    {Sea=3, MinLvl=1875, MaxLvl=1974, Island="Floating Turtle",  MobFolder="Enemies", MobName="Fishman Pirate",   QuestName="TurtleQuest",     QuestNum=1, NPCCFrame=CFrame.new(-3345, 483, 5710)},
+    {Sea=3, MinLvl=1975, MaxLvl=2074, Island="Floating Turtle",  MobFolder="Enemies", MobName="Mythological Pirate",QuestName="TurtleQuest",   QuestNum=2, NPCCFrame=CFrame.new(-3345, 483, 5710)},
+    {Sea=3, MinLvl=2075, MaxLvl=2199, Island="Haunted Castle",   MobFolder="Enemies", MobName="Reborn Skeleton",  QuestName="HauntedQuest",    QuestNum=1, NPCCFrame=CFrame.new(5900, 1000, -700)},
+    {Sea=3, MinLvl=2200, MaxLvl=2374, Island="Sea of Treats",    MobFolder="Enemies", MobName="Cookie Crafter",   QuestName="TreatsQuest",     QuestNum=1, NPCCFrame=CFrame.new(-2200, 57, -5500)},
+    {Sea=3, MinLvl=2375, MaxLvl=2524, Island="Sea of Treats",    MobFolder="Enemies", MobName="Cake Guard",       QuestName="TreatsQuest",     QuestNum=2, NPCCFrame=CFrame.new(-2200, 57, -5500)},
+    {Sea=3, MinLvl=2525, MaxLvl=2674, Island="Tiki Outpost",     MobFolder="Enemies", MobName="Tiki Outpost Guard",QuestName="TikiQuest",      QuestNum=1, NPCCFrame=CFrame.new(3500, 10, 5400)},
+    {Sea=3, MinLvl=2675, MaxLvl=2799, Island="Tiki Outpost",     MobFolder="Enemies", MobName="Tiki Outpost Guard",QuestName="TikiQuest",      QuestNum=2, NPCCFrame=CFrame.new(3500, 10, 5400)},
+    {Sea=3, MinLvl=2800, MaxLvl=2999, Island="Mirage Island",    MobFolder="Enemies", MobName="Demonic Soul",     QuestName="MirageQuest",     QuestNum=1, NPCCFrame=CFrame.new(-2800, 34, 3050)},
+    {Sea=3, MinLvl=3000, MaxLvl=9999, Island="Mirage Island",    MobFolder="Enemies", MobName="Demonic Soul",     QuestName="MirageQuest",     QuestNum=2, NPCCFrame=CFrame.new(-2800, 34, 3050)},
 }
 
 -- ── AUTO FARM HELPERS ─────────────────────────────────────────────────────────
-local farmStatus = "Idle"   -- string ditampilkan di GUI
+local farmStatus = "Idle"
 
 local function GetFarmData()
     -- safe access Level dari Data folder
@@ -256,7 +254,7 @@ local FARM_STATE = {
     WAIT_SPAWN = "wait_spawn",
 }
 local farmState   = FARM_STATE.IDLE
-local waitingFly  = false -- apakah lagi nunggu tween selesai
+local waitingFly  = false
 
 local function StartFarm()
     if farmConn then farmConn:Disconnect() farmConn = nil end
@@ -1063,10 +1061,10 @@ RunService.Heartbeat:Connect(function()
     statusText.Text = farmStatus
 
     if farmData then
-        levelText.Text = ("Lv %d  |  %s  |  🎯 %s"):format(
-            level or 0, farmData.Island, farmData.MobName)
+        levelText.Text = ("Lv %d  |  Sea %d  |  %s  |  Target: %s  [Lv %d-%d]"):format(
+            level or 0, farmData.Sea or 1, farmData.Island, farmData.MobName, farmData.MinLvl, farmData.MaxLvl)
     else
-        levelText.Text = ("Lv %d  |  No data — tambah ke LevelDatabase"):format(level or 0)
+        levelText.Text = ("Lv %d  |  Data tidak ditemukan di database"):format(level or 0)
     end
 end)
 
