@@ -1,6 +1,5 @@
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
-local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
 local Camera = Workspace.CurrentCamera
 
@@ -15,49 +14,32 @@ local CONFIG = {
     Mode4 = false,
     Radius = 15,
     Jarak = 100,
+    HitboxSize = 20,
 }
 
 local LockedTarget = nil
+local OriginalSizes = {}
 local ESP_Objects = {}
-local AbilityKeys = {
-    Enum.KeyCode.Z,
-    Enum.KeyCode.X,
-    Enum.KeyCode.C,
-    Enum.KeyCode.V,
-    Enum.KeyCode.F,
-    Enum.KeyCode.R,
-    Enum.KeyCode.E,
-    Enum.KeyCode.Q,
-    Enum.KeyCode.One,
-    Enum.KeyCode.Two,
-    Enum.KeyCode.Three,
-}
 
-local function SnapToTarget()
-    if not LockedTarget or not LockedTarget.Character then return end
-    local targetRoot = LockedTarget.Character:FindFirstChild("HumanoidRootPart")
-    local humanoid = LockedTarget.Character:FindFirstChild("Humanoid")
-    if not targetRoot or not humanoid or humanoid.Health <= 0 then return end
-
-    local targetPos = targetRoot.Position
-    local myPos = LocalRoot.Position
-    local direction = (targetPos - myPos).Unit
-    local flatDir = Vector3.new(direction.X, 0, direction.Z)
-
-    LocalRoot.CFrame = CFrame.new(myPos, myPos + flatDir)
-    Camera.CFrame = CFrame.new(Camera.CFrame.Position, targetPos)
+local function ExpandHitbox(player)
+    if not player or not player.Character then return end
+    local root = player.Character:FindFirstChild("HumanoidRootPart")
+    if not root then return end
+    if not OriginalSizes[player] then
+        OriginalSizes[player] = root.Size
+    end
+    root.Size = Vector3.new(CONFIG.HitboxSize, CONFIG.HitboxSize, CONFIG.HitboxSize)
 end
 
-UserInputService.InputBegan:Connect(function(input, gameProcessed)
-    if gameProcessed then return end
-    if not CONFIG.Mode1 or not LockedTarget then return end
-    for _, key in ipairs(AbilityKeys) do
-        if input.KeyCode == key then
-            SnapToTarget()
-            break
-        end
+local function RestoreHitbox(player)
+    if not player or not player.Character then return end
+    local root = player.Character:FindFirstChild("HumanoidRootPart")
+    if not root then return end
+    if OriginalSizes[player] then
+        root.Size = OriginalSizes[player]
+        OriginalSizes[player] = nil
     end
-end)
+end
 
 local function Mode2Func(centerPosition)
     local hitboxPart = Instance.new("Part")
@@ -78,28 +60,23 @@ local function CreateESP(player)
         NameTag = Drawing.new("Text"),
         HealthBar = Drawing.new("Square"),
     }
-
     esp.Box.Thickness = 1
     esp.Box.Color = Color3.fromRGB(255, 50, 50)
     esp.Box.Filled = false
     esp.Box.Visible = false
-
     esp.Line.Thickness = 1
     esp.Line.Color = Color3.fromRGB(0, 255, 255)
     esp.Line.Visible = false
-
     esp.NameTag.Size = 13
     esp.NameTag.Color = Color3.fromRGB(255, 255, 255)
     esp.NameTag.Center = true
     esp.NameTag.Outline = true
     esp.NameTag.OutlineColor = Color3.fromRGB(0, 0, 0)
     esp.NameTag.Visible = false
-
     esp.HealthBar.Thickness = 1
     esp.HealthBar.Color = Color3.fromRGB(0, 255, 0)
     esp.HealthBar.Filled = true
     esp.HealthBar.Visible = false
-
     return esp
 end
 
@@ -125,7 +102,10 @@ Players.PlayerAdded:Connect(function(player)
 end)
 
 Players.PlayerRemoving:Connect(function(player)
-    if player == LockedTarget then LockedTarget = nil end
+    if player == LockedTarget then
+        RestoreHitbox(player)
+        LockedTarget = nil
+    end
     CleanupESP(player)
 end)
 
@@ -145,24 +125,20 @@ local function RenderESP()
             local root = character:FindFirstChild("HumanoidRootPart")
             local humanoid = character:FindFirstChild("Humanoid")
             local head = character:FindFirstChild("Head")
-
             if root and humanoid and head and humanoid.Health > 0 then
                 local rootScreen, onScreen = Camera:WorldToScreenPoint(root.Position)
                 local headScreen = Camera:WorldToScreenPoint(head.Position)
-
                 if onScreen then
                     local height = math.abs(rootScreen.Y - headScreen.Y) * 2
                     if height < 10 then height = 10 end
                     local width = height * 0.5
                     local boxPos = Vector2.new(rootScreen.X - width / 2, rootScreen.Y - height / 2)
-
                     local isLocked = (player == LockedTarget)
                     esp.Box.Color = isLocked and Color3.fromRGB(0, 255, 100) or Color3.fromRGB(255, 50, 50)
                     esp.Box.Thickness = isLocked and 2 or 1
                     esp.Box.Size = Vector2.new(width, height)
                     esp.Box.Position = boxPos
                     esp.Box.Visible = true
-
                     local hpRatio = humanoid.Health / humanoid.MaxHealth
                     local barHeight = height * hpRatio
                     esp.HealthBar.Size = Vector2.new(4, barHeight)
@@ -173,12 +149,10 @@ local function RenderESP()
                         0
                     )
                     esp.HealthBar.Visible = true
-
                     local dist = math.floor((root.Position - LocalRoot.Position).Magnitude)
                     esp.NameTag.Text = player.Name .. " [" .. math.floor(humanoid.Health) .. "hp | " .. dist .. "m]"
                     esp.NameTag.Position = Vector2.new(rootScreen.X, boxPos.Y - 16)
                     esp.NameTag.Visible = true
-
                     if CONFIG.Mode4 then
                         local screenCenter = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y)
                         esp.Line.From = screenCenter
@@ -225,7 +199,7 @@ c0.CornerRadius = UDim.new(0, 6)
 c0.Parent = toggleButton
 
 local mainFrame = Instance.new("Frame")
-mainFrame.Size = UDim2.new(0, 230, 0, 380)
+mainFrame.Size = UDim2.new(0, 230, 0, 400)
 mainFrame.Position = UDim2.new(0, 10, 0, 48)
 mainFrame.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
 mainFrame.BorderSizePixel = 0
@@ -328,7 +302,6 @@ local function RefreshPlayerList()
         btn:Destroy()
     end
     playerButtons = {}
-
     local totalHeight = 0
     for _, player in ipairs(Players:GetPlayers()) do
         if player ~= LocalPlayer then
@@ -345,18 +318,19 @@ local function RefreshPlayerList()
             local bc = Instance.new("UICorner")
             bc.CornerRadius = UDim.new(0, 4)
             bc.Parent = btn
-
             btn.MouseButton1Click:Connect(function()
                 if LockedTarget == player then
+                    if CONFIG.Mode1 then RestoreHitbox(player) end
                     LockedTarget = nil
                     SetLockLabel(nil)
                 else
+                    if LockedTarget and CONFIG.Mode1 then RestoreHitbox(LockedTarget) end
                     LockedTarget = player
                     SetLockLabel(player)
+                    if CONFIG.Mode1 then ExpandHitbox(player) end
                 end
                 RefreshPlayerList()
             end)
-
             playerButtons[player] = btn
             totalHeight = totalHeight + 30
         end
@@ -386,8 +360,8 @@ local function MakeButton(text, yPos)
     return btn
 end
 
-local mode1Button = MakeButton("MODE 1  —  Ability Lock", 194)
-local mode2Button = MakeButton("MODE 2  —  Hitbox", 232)
+local mode1Button = MakeButton("MODE 1  —  Hitbox Expand", 194)
+local mode2Button = MakeButton("MODE 2  —  Hitbox Spam", 232)
 local mode3Button = MakeButton("MODE 3  —  ESP", 270)
 local mode4Button = MakeButton("MODE 4  —  Tracers", 308)
 
@@ -409,22 +383,23 @@ toggleButton.MouseButton1Click:Connect(function()
 end)
 
 closeButton.MouseButton1Click:Connect(function()
+    if LockedTarget then RestoreHitbox(LockedTarget) end
     screenGui:Destroy()
 end)
 
 mode1Button.MouseButton1Click:Connect(function()
     CONFIG.Mode1 = not CONFIG.Mode1
-    SetToggle(mode1Button, CONFIG.Mode1, "MODE 1  —  Ability Lock")
-    if not CONFIG.Mode1 then
-        LockedTarget = nil
-        SetLockLabel(nil)
-        RefreshPlayerList()
+    SetToggle(mode1Button, CONFIG.Mode1, "MODE 1  —  Hitbox Expand")
+    if CONFIG.Mode1 then
+        if LockedTarget then ExpandHitbox(LockedTarget) end
+    else
+        if LockedTarget then RestoreHitbox(LockedTarget) end
     end
 end)
 
 mode2Button.MouseButton1Click:Connect(function()
     CONFIG.Mode2 = not CONFIG.Mode2
-    SetToggle(mode2Button, CONFIG.Mode2, "MODE 2  —  Hitbox")
+    SetToggle(mode2Button, CONFIG.Mode2, "MODE 2  —  Hitbox Spam")
 end)
 
 mode3Button.MouseButton1Click:Connect(function()
@@ -443,6 +418,9 @@ LocalPlayer.CharacterAdded:Connect(function(char)
 end)
 
 RunService.RenderStepped:Connect(function()
+    if CONFIG.Mode1 and LockedTarget then
+        ExpandHitbox(LockedTarget)
+    end
     if CONFIG.Mode2 and LocalRoot then
         Mode2Func(LocalRoot.Position)
     end
@@ -458,6 +436,7 @@ RunService.RenderStepped:Connect(function()
         else
             local hum = char:FindFirstChild("Humanoid")
             if hum and hum.Health <= 0 then
+                RestoreHitbox(LockedTarget)
                 LockedTarget = nil
                 SetLockLabel(nil)
                 RefreshPlayerList()
