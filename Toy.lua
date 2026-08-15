@@ -45,18 +45,27 @@ local currentFarmTween  = nil
 local RegisterAttack = nil
 local RegisterHit = nil
 local CommF = nil
+local Net = nil
 
 task.spawn(function()
-    local ok = pcall(function()
-        local net = ReplicatedStorage:WaitForChild("Modules",5):WaitForChild("Net",5)
-        RegisterAttack = net:WaitForChild("RegisterAttack",5)
-        RegisterHit = net:WaitForChild("RegisterHit",5)
+    pcall(function()
+        Net = require(ReplicatedStorage:WaitForChild("Modules",5):WaitForChild("Net",5))
     end)
-    if not ok or not RegisterAttack then
-        RegisterAttack = ReplicatedStorage:FindFirstChild("RegisterAttack",true)
+end)
+
+task.spawn(function()
+    pcall(function()
+        local net = Net or require(ReplicatedStorage:WaitForChild("Modules",5):WaitForChild("Net",5))
+        if net and net.RemoteEvent then
+            RegisterAttack = net:RemoteEvent("RegisterAttack", true)
+            RegisterHit = net:RemoteEvent("RegisterHit", true)
+        end
+    end)
+    if not RegisterAttack then
+        RegisterAttack = ReplicatedStorage:FindFirstChild("RegisterAttack", true)
     end
     if not RegisterHit then
-        RegisterHit = ReplicatedStorage:FindFirstChild("RegisterHit",true)
+        RegisterHit = ReplicatedStorage:FindFirstChild("RegisterHit", true)
     end
 end)
 
@@ -255,50 +264,133 @@ local function FindNearestMob(mobName, mobFolder)
     return best
 end
 
+local lastFarmAttack = 0
+local FARM_ATTACK_INTERVAL = 0.10
+
 local function GetClosestRelzEnemy(distance)
     local target, others = nil, {}
     local folder = Workspace:FindFirstChild("Enemies")
     local root = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
     if not folder or not root then return nil, others end
-    for _, enemy in pairs(folder:GetChildren()) do
+
+    for _, enemy in ipairs(folder:GetChildren()) do
         local hrp = enemy:FindFirstChild("HumanoidRootPart")
         local hum = enemy:FindFirstChildOfClass("Humanoid")
-        if hrp and hum and hum.Health > 0 and (hrp.Position-root.Position).Magnitude < distance then
-            if not target then target=hrp else table.insert(others,{enemy,hrp}) end
+        if hrp and hum and hum.Health > 0 then
+            local dist = (hrp.Position - root.Position).Magnitude
+            if dist < distance then
+                if not target then
+                    target = hrp
+                else
+                    table.insert(others, {enemy, hrp})
+                end
+            end
         end
     end
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character then
+            local hrp = player.Character:FindFirstChild("HumanoidRootPart")
+            local hum = player.Character:FindFirstChildOfClass("Humanoid")
+            if hrp and hum and hum.Health > 0 then
+                local dist = (hrp.Position - root.Position).Magnitude
+                if dist < distance then
+                    if not target then
+                        target = hrp
+                    else
+                        table.insert(others, {player, hrp})
+                    end
+                end
+            end
+        end
+    end
+
     return target, others
 end
 
-local function RelzAttackNearest()
-    if not RegisterAttack or not RegisterHit then return end
+local function AttackNearestRelz()
+    local now = os.clock()
+    if now - lastFarmAttack < FARM_ATTACK_INTERVAL then return end
+    lastFarmAttack = now
+
     local target, others = GetClosestRelzEnemy(120)
     if not target then return end
+
     pcall(function()
-        RegisterAttack:FireServer(0)
-        RegisterHit:FireServer(target, others)
+        if RegisterAttack then
+            RegisterAttack:FireServer(0)
+        end
+        if RegisterHit then
+            RegisterHit:FireServer(target, others)
+        end
     end)
+end
+
+local function IsCombatTool(tool)
+    if not tool or not tool:IsA("Tool") then return false end
+    local tip = tostring(tool.ToolTip or "")
+    return tip == "Melee" or tip == "Sword" or tip == "Gun" or tip == "Blox Fruit"
+end
+
+local function GetFarmWeapon()
+    local char = LocalPlayer.Character
+    if not char then return nil end
+
+    local active = char:FindFirstChildOfClass("Tool")
+    if IsCombatTool(active) then
+        return active
+    end
+
+    for _, tool in ipairs(LocalPlayer.Backpack:GetChildren()) do
+        if IsCombatTool(tool) then
+            return tool
+        end
+    end
+    return nil
+end
+
+local function EquipFarmWeapon()
+    local char = LocalPlayer.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not char or not hum then return nil end
+
+    local tool = GetFarmWeapon()
+    if tool and tool.Parent ~= char then
+        pcall(function() hum:EquipTool(tool) end)
+        task.wait(0.05)
+    end
+    return char:FindFirstChildOfClass("Tool") or tool
 end
 
 local function ExecuteAttack(mob)
     local char = LocalPlayer.Character
     if not char or not mob then return end
+
     local hum = char:FindFirstChildOfClass("Humanoid")
-    if not hum then return end
-    local weaponName = _G.SelectedWeapon or "Melee"
-    local tool = char:FindFirstChild(weaponName) or LocalPlayer.Backpack:FindFirstChild(weaponName)
-    if tool then pcall(function() hum:EquipTool(tool) end) end
-    pcall(function()
-        if not char:FindFirstChild("HasBuso") and CommF then CommF:InvokeServer("Buso") end
-    end)
+    local root = char:FindFirstChild("HumanoidRootPart")
     local mr = mob:FindFirstChild("HumanoidRootPart")
-    if mr then
-        pcall(function()
-            root = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-            if root then root.CFrame = mr.CFrame * CFrame.new(0, CONFIG.FarmHoverHeight, 0) end
-        end)
+    local mh = mob:FindFirstChildOfClass("Humanoid")
+    if not hum or not root or not mr or not mh or mh.Health <= 0 then return end
+
+    local tool = EquipFarmWeapon()
+    if not tool then
+        farmStatus = "No combat weapon"
+        return
     end
-    RelzAttackNearest()
+
+    pcall(function()
+        if CommF and not char:FindFirstChild("HasBuso") then
+            CommF:InvokeServer("Buso")
+        end
+    end)
+
+    -- Relz-style farm position: stay directly above the target.
+    pcall(function()
+        root.CFrame = mr.CFrame * CFrame.new(0, CONFIG.FarmHoverHeight, 0)
+    end)
+
+    -- Relz attack pipeline: RegisterAttack -> RegisterHit, repeatedly.
+    AttackNearestRelz()
 end
 
 local FARM_STATE = {
