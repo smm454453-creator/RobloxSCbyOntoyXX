@@ -321,13 +321,49 @@ local function GetClosestRelzEnemy(distance)
     return target, others
 end
 
+local function SimulateMouse1()
+    -- Simulate a real left-click tap, similar to repeatedly holding/clicking M1.
+    local cam = Workspace.CurrentCamera
+    local vim = game:GetService("VirtualInputManager")
+    local vu = game:GetService("VirtualUser")
+    local sent = false
+
+    pcall(function()
+        if vim and vim.SendMouseButtonEvent then
+            local pos = UserInputService:GetMouseLocation()
+            local x, y = math.floor(pos.X), math.floor(pos.Y)
+            vim:SendMouseButtonEvent(x, y, 0, true, game, 0)
+            task.wait(0.018)
+            vim:SendMouseButtonEvent(x, y, 0, false, game, 0)
+            sent = true
+        end
+    end)
+
+    if not sent then
+        pcall(function()
+            if vu and cam then
+                vu:CaptureController()
+                vu:Button1Down(Vector2.new(0, 0), cam.CFrame)
+                task.wait(0.018)
+                vu:Button1Up(Vector2.new(0, 0), cam.CFrame)
+                sent = true
+            end
+        end)
+    end
+end
+
 local function DoRelzM1(tool)
     if not tool then return end
+
+    -- First do the normal Tool activation, then send an actual M1 click.
     pcall(function()
         if tool.Activate then
             tool:Activate()
         end
     end)
+
+    SimulateMouse1()
+
     pcall(function()
         local leftClickRemote = tool:FindFirstChild("LeftClickRemote")
         if leftClickRemote and tostring(tool.ToolTip) == "Blox Fruit" then
@@ -354,6 +390,11 @@ local function AttackNearestRelz(tool)
         RelzRegisterAttack:FireServer(0)
         RelzRegisterHit:FireServer(target, others)
     end)
+
+    -- A second real click helps executors/games that only register the local M1 input path.
+    if tostring(tool.ToolTip) == "Melee" or tostring(tool.ToolTip) == "Sword" or tostring(tool.ToolTip) == "Gun" then
+        pcall(SimulateMouse1)
+    end
 end
 
 local function IsCombatTool(tool)
