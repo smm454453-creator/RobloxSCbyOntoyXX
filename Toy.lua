@@ -139,13 +139,18 @@ local function StartNoclip()
                 part.CanCollide = false
             end
         end
+        local r = char:FindFirstChild("HumanoidRootPart")
+        if r and r.Position.Y < 5 then
+            r.CFrame = CFrame.new(r.Position.X, MIN_FLY_Y, r.Position.Z)
+        end
     end)
 end
 local function StopNoclip()
     if noclipConn then noclipConn:Disconnect() noclipConn = nil end
 end
 
--- Fly / Tween ke target CFrame
+local MIN_FLY_Y = 80
+
 local function FlyTo(targetCFrame, onDone)
     if currentFarmTween then
         currentFarmTween:Cancel()
@@ -155,13 +160,22 @@ local function FlyTo(targetCFrame, onDone)
     local root = char and char:FindFirstChild("HumanoidRootPart")
     if not root then if onDone then onDone() end return end
 
-    local dist = (targetCFrame.Position - root.Position).Magnitude
-    local dur  = math.clamp(dist / CONFIG.FarmFlySpeed, 0.1, 8)
+    local destPos = targetCFrame.Position
+    local safeDestY = math.max(destPos.Y, MIN_FLY_Y)
+    local safeDest = CFrame.new(Vector3.new(destPos.X, safeDestY, destPos.Z))
+
+    if root.Position.Y < MIN_FLY_Y then
+        root.CFrame = CFrame.new(root.Position.X, MIN_FLY_Y, root.Position.Z)
+        task.wait(0.05)
+    end
+
+    local dist = (safeDest.Position - root.Position).Magnitude
+    local dur  = math.clamp(dist / CONFIG.FarmFlySpeed, 0.3, 12)
 
     local info  = TweenInfo.new(dur, Enum.EasingStyle.Linear)
-    local tween = TweenService:Create(root, info, {CFrame = targetCFrame})
+    local tween = TweenService:Create(root, info, {CFrame = safeDest})
     currentFarmTween = tween
-    tween.Completed:Connect(function(state)
+    tween.Completed:Connect(function()
         currentFarmTween = nil
         if onDone then onDone() end
     end)
@@ -300,42 +314,51 @@ local function StartFarm()
         elseif farmState == FARM_STATE.TAKE_QUEST then
             if HasActiveQuest() then
                 farmState  = FARM_STATE.GO_MOB
-                farmStatus = "Quest accepted — going to mob"
+                farmStatus = "Quest diterima!"
                 return
             end
-            farmStatus = "Accepting quest..."
+            local npcDist = (farmData.NPCCFrame.Position - root.Position).Magnitude
+            if npcDist > 30 then
+                farmState = FARM_STATE.GO_QUEST
+                return
+            end
+            farmStatus = "Ambil quest: " .. farmData.QuestName
             if CommF then
                 pcall(function()
                     CommF:InvokeServer("StartQuest", farmData.QuestName, farmData.QuestNum)
                 end)
             end
-            task.wait(0.5)
-            -- fallback: kalau quest gak ke-detect via PlayerGui, lanjut aja
-            farmState = FARM_STATE.GO_MOB
+            task.wait(0.8)
+            if HasActiveQuest() then
+                farmState = FARM_STATE.GO_MOB
+            else
+                farmStatus = "Quest gagal, coba lagi..."
+            end
 
         elseif farmState == FARM_STATE.GO_MOB then
-            -- Quest selesai → ambil lagi
             if not HasActiveQuest() then
                 farmState  = FARM_STATE.GO_QUEST
-                farmStatus = "Quest done — picking new quest"
+                farmStatus = "Quest selesai — ambil quest baru"
                 return
             end
 
             local mob = FindNearestMob(farmData.MobName, farmData.MobFolder)
             if not mob then
                 farmState  = FARM_STATE.WAIT_SPAWN
-                farmStatus = "Waiting mob spawn..."
+                farmStatus = "Nunggu mob spawn..."
                 return
             end
 
-            local mr   = mob:FindFirstChild("HumanoidRootPart")
+            local mr = mob:FindFirstChild("HumanoidRootPart")
             if not mr then farmStatus = "Mob no root" return end
 
-            local hoverCF = mr.CFrame * CFrame.new(0, CONFIG.FarmHoverHeight, 0)
+            local mobPos  = mr.Position
+            local hoverY  = math.max(mobPos.Y + CONFIG.FarmHoverHeight, MIN_FLY_Y)
+            local hoverCF = CFrame.new(Vector3.new(mobPos.X, hoverY, mobPos.Z))
             local dist    = (hoverCF.Position - root.Position).Magnitude
 
-            if dist > 6 then
-                farmStatus = "Flying to " .. farmData.MobName .. "..."
+            if dist > 8 then
+                farmStatus = "Terbang ke " .. farmData.MobName .. "..."
                 waitingFly = true
                 FlyTo(hoverCF, function()
                     waitingFly = false
@@ -348,22 +371,23 @@ local function StartFarm()
         elseif farmState == FARM_STATE.ATTACK then
             if not HasActiveQuest() then
                 farmState  = FARM_STATE.GO_QUEST
-                farmStatus = "Quest done — picking new quest"
+                farmStatus = "Quest selesai — ambil quest baru"
                 return
             end
 
             local mob = FindNearestMob(farmData.MobName, farmData.MobFolder)
             if not mob or not mob:FindFirstChild("HumanoidRootPart") then
                 farmState  = FARM_STATE.WAIT_SPAWN
-                farmStatus = "Mob dead — waiting respawn"
+                farmStatus = "Mob mati — nunggu respawn"
                 return
             end
 
-            -- Tempelkan posisi hover di atas mob tiap frame
-            local mr = mob.HumanoidRootPart
-            root.CFrame = mr.CFrame * CFrame.new(0, CONFIG.FarmHoverHeight, 0)
+            local mr     = mob.HumanoidRootPart
+            local mobPos = mr.Position
+            local hoverY = math.max(mobPos.Y + CONFIG.FarmHoverHeight, MIN_FLY_Y)
+            root.CFrame  = CFrame.new(Vector3.new(mobPos.X, hoverY, mobPos.Z))
 
-            farmStatus = "Attacking " .. farmData.MobName
+            farmStatus = "Nyerang " .. farmData.MobName
             ExecuteAttack(mob)
 
         elseif farmState == FARM_STATE.WAIT_SPAWN then
@@ -371,7 +395,7 @@ local function StartFarm()
             local mob = FindNearestMob(farmData.MobName, farmData.MobFolder)
             if mob then
                 farmState  = FARM_STATE.GO_MOB
-                farmStatus = "Mob found!"
+                farmStatus = "Mob ketemu!"
             end
         end
     end)
