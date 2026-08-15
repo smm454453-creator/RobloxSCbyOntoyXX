@@ -2,6 +2,7 @@ local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
 local Camera = Workspace.CurrentCamera
 
@@ -15,13 +16,14 @@ local CONFIG = {
     Mode4 = false, Mode5 = false, Mode6 = false,
     Mode7 = false, -- Silent Aim
     Mode8 = false, -- Fast Attack
+    Mode9 = false, -- Auto Farm
     HitboxPercent   = 1,
     SpeedPercent    = 50,
     Radius          = 15,
-    -- Fast Attack: berapa kali per detik nge-fire
-    AttackHPS       = 10,   -- hits per second, range 1-30
-    -- Silent Aim
-    SilentAimFOV    = 120,  -- radius pixel dari center screen
+    AttackHPS       = 10,
+    SilentAimFOV    = 120,
+    FarmFlySpeed    = 300,
+    FarmHoverHeight = 8.5,
 }
 
 local BASE_SPEED    = 16
@@ -37,12 +39,14 @@ local dashHolding       = false
 local dashConn          = nil
 local fastAttackConn    = nil
 local lastAttackTick    = 0
+local farmConn          = nil
+local currentFarmTween  = nil
 
 -- ── NET BIND ─────────────────────────────────────────────────────────────────
 local RegisterAttack = nil
+local CommF = nil
 
 task.spawn(function()
-    -- coba path utama Blox Fruits
     local ok = pcall(function()
         local net = ReplicatedStorage
             :WaitForChild("Modules", 5)
@@ -50,25 +54,349 @@ task.spawn(function()
         RegisterAttack = net:WaitForChild("RegisterAttack", 5)
     end)
     if not ok or not RegisterAttack then
-        -- fallback: scan seluruh RS
         RegisterAttack = ReplicatedStorage:FindFirstChild("RegisterAttack", true)
     end
 end)
 
--- ── SILENT AIM ───────────────────────────────────────────────────────────────
--- bukan overlay — hijack CFrame kamera ke arah target tiap frame
--- efek: semua jurus/projectile nge-hit target meski player ngarah ke mana aja
+task.spawn(function()
+    pcall(function()
+        CommF = ReplicatedStorage
+            :WaitForChild("Remotes", 5)
+            :WaitForChild("CommF_", 5)
+    end)
+end)
 
-local silentTarget = nil  -- BasePart yang lagi di-lock
+-- ── LEVEL DATABASE ────────────────────────────────────────────────────────────
+-- Edit sesuai kebutuhan — tambah entry buat Sea 2/3
+local LevelDatabase = {
+    -- SEA 1
+    {MinLvl=1,   MaxLvl=9,   Island="Starter Island", MobFolder="Enemies",
+     MobName="Bandit",        QuestName="BanditQuest",  QuestNum=1,
+     NPCCFrame=CFrame.new(1060, 16, 1547)},
+
+    {MinLvl=10,  MaxLvl=14,  Island="Jungle",          MobFolder="Enemies",
+     MobName="Monkey",        QuestName="JungleQuest",  QuestNum=1,
+     NPCCFrame=CFrame.new(-1600, 36, 153)},
+
+    {MinLvl=15,  MaxLvl=29,  Island="Jungle",          MobFolder="Enemies",
+     MobName="Gorilla",       QuestName="JungleQuest",  QuestNum=2,
+     NPCCFrame=CFrame.new(-1600, 36, 153)},
+
+    {MinLvl=30,  MaxLvl=39,  Island="Pirate Village",  MobFolder="Enemies",
+     MobName="Pirate",        QuestName="PirateQuest",  QuestNum=1,
+     NPCCFrame=CFrame.new(-1140, 4, 3828)},
+
+    {MinLvl=40,  MaxLvl=59,  Island="Desert",          MobFolder="Enemies",
+     MobName="Desert Bandit", QuestName="DesertQuest",  QuestNum=1,
+     NPCCFrame=CFrame.new(894, 6, 4386)},
+
+    {MinLvl=60,  MaxLvl=74,  Island="Frozen Village",  MobFolder="Enemies",
+     MobName="Snow Bandit",   QuestName="SnowQuest",    QuestNum=1,
+     NPCCFrame=CFrame.new(-1332, 5, -3050)},
+
+    {MinLvl=75,  MaxLvl=99,  Island="Marine Fortress",  MobFolder="Enemies",
+     MobName="Marine",        QuestName="MarineQuest",  QuestNum=1,
+     NPCCFrame=CFrame.new(4240, 33, 716)},
+
+    {MinLvl=100, MaxLvl=149, Island="Skylands",          MobFolder="Enemies",
+     MobName="Sky Bandit",    QuestName="SkyQuest",     QuestNum=1,
+     NPCCFrame=CFrame.new(498, 858, -1301)},
+
+    {MinLvl=150, MaxLvl=199, Island="Prison",            MobFolder="Enemies",
+     MobName="Prisoner",      QuestName="PrisonQuest",  QuestNum=1,
+     NPCCFrame=CFrame.new(27, 73, -3312)},
+
+    {MinLvl=200, MaxLvl=299, Island="Colosseum",         MobFolder="Enemies",
+     MobName="Toga Warrior",  QuestName="ColosseumQuest",QuestNum=1,
+     NPCCFrame=CFrame.new(-2027, 7, -3009)},
+}
+
+-- ── AUTO FARM HELPERS ─────────────────────────────────────────────────────────
+local farmStatus = "Idle"   -- string ditampilkan di GUI
+
+local function GetFarmData()
+    -- safe access Level dari Data folder
+    local ok, level = pcall(function()
+        return LocalPlayer.Data.Level.Value
+    end)
+    if not ok then return nil end
+
+    for _, data in ipairs(LevelDatabase) do
+        if level >= data.MinLvl and level <= data.MaxLvl then
+            return data, level
+        end
+    end
+    return nil, level
+end
+
+-- Noclip loop — dimatiin kalau Mode9 off
+local noclipConn = nil
+local function StartNoclip()
+    if noclipConn then return end
+    noclipConn = RunService.Stepped:Connect(function()
+        local char = LocalPlayer.Character
+        if not char then return end
+        for _, part in ipairs(char:GetDescendants()) do
+            if part:IsA("BasePart") then
+                part.CanCollide = false
+            end
+        end
+    end)
+end
+local function StopNoclip()
+    if noclipConn then noclipConn:Disconnect() noclipConn = nil end
+end
+
+-- Fly / Tween ke target CFrame
+local function FlyTo(targetCFrame, onDone)
+    if currentFarmTween then
+        currentFarmTween:Cancel()
+        currentFarmTween = nil
+    end
+    local char = LocalPlayer.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    if not root then if onDone then onDone() end return end
+
+    local dist = (targetCFrame.Position - root.Position).Magnitude
+    local dur  = math.clamp(dist / CONFIG.FarmFlySpeed, 0.1, 8)
+
+    local info  = TweenInfo.new(dur, Enum.EasingStyle.Linear)
+    local tween = TweenService:Create(root, info, {CFrame = targetCFrame})
+    currentFarmTween = tween
+    tween.Completed:Connect(function(state)
+        currentFarmTween = nil
+        if onDone then onDone() end
+    end)
+    tween:Play()
+    return tween
+end
+
+-- Cek quest aktif via PlayerGui (UI "Quest" yang visible)
+local function HasActiveQuest()
+    local gui = LocalPlayer:FindFirstChild("PlayerGui")
+    if not gui then return false end
+    local main = gui:FindFirstChild("Main")
+    if not main then return false end
+    local questFrame = main:FindFirstChild("Quest")
+    return questFrame and questFrame.Visible
+end
+
+-- Cari mob terdekat yang masih hidup
+local function FindNearestMob(mobName, mobFolder)
+    local root = LocalCharacter and LocalCharacter:FindFirstChild("HumanoidRootPart")
+    if not root then return nil end
+
+    local folder = Workspace:FindFirstChild(mobFolder or "Enemies")
+    if not folder then return nil end
+
+    local best, bestDist = nil, math.huge
+    for _, mob in ipairs(folder:GetChildren()) do
+        if mob.Name == mobName then
+            local hum = mob:FindFirstChild("Humanoid")
+            local mr  = mob:FindFirstChild("HumanoidRootPart")
+            if hum and mr and hum.Health > 0 then
+                local dist = (mr.Position - root.Position).Magnitude
+                if dist < bestDist then
+                    bestDist = dist
+                    best = mob
+                end
+            end
+        end
+    end
+    return best
+end
+
+-- Ultra fast attack — bypass animasi swing
+local function ExecuteAttack(mob)
+    local char = LocalPlayer.Character
+    if not char or not mob then return end
+
+    -- Auto-equip tool jika belum equipped
+    if not char:FindFirstChildOfClass("Tool") then
+        local tool = LocalPlayer.Backpack:FindFirstChildOfClass("Tool")
+        if tool then
+            char:FindFirstChild("Humanoid"):EquipTool(tool)
+            task.wait(0.1)
+        end
+    end
+
+    local tool = char:FindFirstChildOfClass("Tool")
+
+    -- FireServer RegisterAttack
+    if RegisterAttack then
+        pcall(function() RegisterAttack:FireServer(mob:FindFirstChild("HumanoidRootPart")) end)
+    end
+
+    -- firetouchinterest jika tool ada Handle dan mob ada Head
+    if tool and tool:FindFirstChild("Handle") then
+        local head = mob:FindFirstChild("Head")
+        local mr   = mob:FindFirstChild("HumanoidRootPart")
+        if head then
+            pcall(function()
+                firetouchinterest(tool.Handle, head, 0)
+                firetouchinterest(tool.Handle, head, 1)
+            end)
+        end
+        if mr then
+            pcall(function()
+                firetouchinterest(tool.Handle, mr, 0)
+                firetouchinterest(tool.Handle, mr, 1)
+            end)
+        end
+    end
+end
+
+-- State machine enum
+local FARM_STATE = {
+    IDLE       = "idle",
+    GO_QUEST   = "go_quest",
+    TAKE_QUEST = "take_quest",
+    GO_MOB     = "go_mob",
+    ATTACK     = "attack",
+    WAIT_SPAWN = "wait_spawn",
+}
+local farmState   = FARM_STATE.IDLE
+local waitingFly  = false -- apakah lagi nunggu tween selesai
+
+local function StartFarm()
+    if farmConn then farmConn:Disconnect() farmConn = nil end
+    farmState  = FARM_STATE.GO_QUEST
+    waitingFly = false
+    farmStatus = "Starting..."
+
+    farmConn = RunService.Heartbeat:Connect(function()
+        if not CONFIG.Mode9 then return end
+
+        -- jangan proses kalau lagi nunggu tween fly
+        if waitingFly then return end
+
+        local char = LocalPlayer.Character
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        if not root then return end
+
+        local farmData, level = GetFarmData()
+        if not farmData then
+            farmStatus = "No data for level " .. tostring(level)
+            return
+        end
+
+        -- ── STATE MACHINE ───────────────────────────────────────────
+        if farmState == FARM_STATE.GO_QUEST then
+            if HasActiveQuest() then
+                farmState  = FARM_STATE.GO_MOB
+                farmStatus = "Quest active — hunting"
+                return
+            end
+            local dist = (farmData.NPCCFrame.Position - root.Position).Magnitude
+            if dist > 20 then
+                farmStatus = "Flying to quest NPC..."
+                waitingFly = true
+                FlyTo(farmData.NPCCFrame, function()
+                    waitingFly = false
+                    farmState  = FARM_STATE.TAKE_QUEST
+                end)
+            else
+                farmState = FARM_STATE.TAKE_QUEST
+            end
+
+        elseif farmState == FARM_STATE.TAKE_QUEST then
+            if HasActiveQuest() then
+                farmState  = FARM_STATE.GO_MOB
+                farmStatus = "Quest accepted — going to mob"
+                return
+            end
+            farmStatus = "Accepting quest..."
+            if CommF then
+                pcall(function()
+                    CommF:InvokeServer("StartQuest", farmData.QuestName, farmData.QuestNum)
+                end)
+            end
+            task.wait(0.5)
+            -- fallback: kalau quest gak ke-detect via PlayerGui, lanjut aja
+            farmState = FARM_STATE.GO_MOB
+
+        elseif farmState == FARM_STATE.GO_MOB then
+            -- Quest selesai → ambil lagi
+            if not HasActiveQuest() then
+                farmState  = FARM_STATE.GO_QUEST
+                farmStatus = "Quest done — picking new quest"
+                return
+            end
+
+            local mob = FindNearestMob(farmData.MobName, farmData.MobFolder)
+            if not mob then
+                farmState  = FARM_STATE.WAIT_SPAWN
+                farmStatus = "Waiting mob spawn..."
+                return
+            end
+
+            local mr   = mob:FindFirstChild("HumanoidRootPart")
+            if not mr then farmStatus = "Mob no root" return end
+
+            local hoverCF = mr.CFrame * CFrame.new(0, CONFIG.FarmHoverHeight, 0)
+            local dist    = (hoverCF.Position - root.Position).Magnitude
+
+            if dist > 6 then
+                farmStatus = "Flying to " .. farmData.MobName .. "..."
+                waitingFly = true
+                FlyTo(hoverCF, function()
+                    waitingFly = false
+                    farmState  = FARM_STATE.ATTACK
+                end)
+            else
+                farmState = FARM_STATE.ATTACK
+            end
+
+        elseif farmState == FARM_STATE.ATTACK then
+            if not HasActiveQuest() then
+                farmState  = FARM_STATE.GO_QUEST
+                farmStatus = "Quest done — picking new quest"
+                return
+            end
+
+            local mob = FindNearestMob(farmData.MobName, farmData.MobFolder)
+            if not mob or not mob:FindFirstChild("HumanoidRootPart") then
+                farmState  = FARM_STATE.WAIT_SPAWN
+                farmStatus = "Mob dead — waiting respawn"
+                return
+            end
+
+            -- Tempelkan posisi hover di atas mob tiap frame
+            local mr = mob.HumanoidRootPart
+            root.CFrame = mr.CFrame * CFrame.new(0, CONFIG.FarmHoverHeight, 0)
+
+            farmStatus = "Attacking " .. farmData.MobName
+            ExecuteAttack(mob)
+
+        elseif farmState == FARM_STATE.WAIT_SPAWN then
+            task.wait(1.5)
+            local mob = FindNearestMob(farmData.MobName, farmData.MobFolder)
+            if mob then
+                farmState  = FARM_STATE.GO_MOB
+                farmStatus = "Mob found!"
+            end
+        end
+    end)
+end
+
+local function StopFarm()
+    if farmConn then farmConn:Disconnect() farmConn = nil end
+    if currentFarmTween then currentFarmTween:Cancel() currentFarmTween = nil end
+    StopNoclip()
+    farmState  = FARM_STATE.IDLE
+    farmStatus = "Idle"
+    waitingFly = false
+end
+
+-- ── SILENT AIM ───────────────────────────────────────────────────────────────
+local silentTarget = nil
 
 local function GetSilentTarget()
     local vp  = Camera.ViewportSize
     local cx  = vp.X / 2
     local cy  = vp.Y / 2
     local fov = CONFIG.SilentAimFOV
-
     local best, bestDist = nil, math.huge
-
     for _, player in ipairs(Players:GetPlayers()) do
         if player == LocalPlayer then continue end
         local char = player.Character
@@ -76,61 +404,37 @@ local function GetSilentTarget()
         local root = char:FindFirstChild("HumanoidRootPart")
         local hum  = char:FindFirstChild("Humanoid")
         if not (root and hum and hum.Health > 0) then continue end
-
         local screen, onScreen = Camera:WorldToScreenPoint(root.Position)
         if not onScreen then continue end
-
         local dx   = screen.X - cx
         local dy   = screen.Y - cy
         local dist = math.sqrt(dx*dx + dy*dy)
-
-        -- hanya target yang masuk dalam FOV circle dari center
         if dist < fov and dist < bestDist then
             bestDist = dist
             best     = root
         end
     end
-
     return best
 end
 
--- redirect CFrame kamera ke target — server nge-read arah kamera
--- pas FireServer, direction dihitung dari CFrame kamera bukan mouse
 local function ApplySilentAim()
-    if not CONFIG.Mode7 then
-        silentTarget = nil
-        return
-    end
-
+    if not CONFIG.Mode7 then silentTarget = nil return end
     silentTarget = GetSilentTarget()
     if not silentTarget then return end
     if not silentTarget.Parent then silentTarget = nil return end
-
-    -- arahkan kamera ke target — smooth, satu frame
     local targetPos  = silentTarget.Position
     local camPos     = Camera.CFrame.Position
     local direction  = (targetPos - camPos).Unit
-    local lookCFrame = CFrame.new(camPos, camPos + direction)
-
-    Camera.CFrame = lookCFrame
+    Camera.CFrame    = CFrame.new(camPos, camPos + direction)
 end
 
 -- ── FAST ATTACK ───────────────────────────────────────────────────────────────
--- FIX: AttackHPS = hits per second
--- interval = 1 / HPS
--- slider 1-30 → 1 hit/s sampai 30 hit/s
--- sebelumnya kebalik: slider 30 → delay 0.30s (malah lambat)
-
 local function GetAttackInterval()
     return 1 / math.max(CONFIG.AttackHPS, 1)
 end
 
 local function GetFastTarget()
-    -- prioritas: silent aim target yang udah di-lock
-    if silentTarget and silentTarget.Parent then
-        return silentTarget
-    end
-    -- fallback: nearest on-screen
+    if silentTarget and silentTarget.Parent then return silentTarget end
     local best, bestDist = nil, math.huge
     for _, player in ipairs(Players:GetPlayers()) do
         if player == LocalPlayer then continue end
@@ -142,31 +446,22 @@ local function GetFastTarget()
         local _, onScreen = Camera:WorldToScreenPoint(root.Position)
         if not onScreen then continue end
         local dist = (root.Position - LocalRoot.Position).Magnitude
-        if dist < bestDist then
-            bestDist = dist
-            best     = root
-        end
+        if dist < bestDist then bestDist = dist best = root end
     end
     return best
 end
 
 local function StartFastAttack()
     if fastAttackConn then fastAttackConn:Disconnect() fastAttackConn = nil end
-
     fastAttackConn = RunService.Heartbeat:Connect(function()
         if not CONFIG.Mode8 then return end
         if not RegisterAttack then return end
-
         local now = tick()
         if now - lastAttackTick < GetAttackInterval() then return end
         lastAttackTick = now
-
         local target = GetFastTarget()
         if not target then return end
-
-        pcall(function()
-            RegisterAttack:FireServer(target)
-        end)
+        pcall(function() RegisterAttack:FireServer(target) end)
     end)
 end
 
@@ -178,13 +473,11 @@ end
 local function PctToSize(pct)
     return MIN_HITBOX + (MAX_HITBOX - MIN_HITBOX) * ((pct - 1) / 99)
 end
-
 local function ExpandHitbox()
     if not OriginalLocalSize then OriginalLocalSize = LocalRoot.Size end
     local sz = PctToSize(CONFIG.HitboxPercent)
     LocalRoot.Size = Vector3.new(sz, sz, sz)
 end
-
 local function RestoreHitbox()
     if OriginalLocalSize then
         LocalRoot.Size = OriginalLocalSize
@@ -287,7 +580,6 @@ end
 Players.PlayerAdded:Connect(function(p)    ESP_Objects[p] = CreateESP(p) end)
 Players.PlayerRemoving:Connect(function(p) CleanupESP(p) end)
 
--- silent aim FOV circle — drawing overlay
 local fovCircle = Drawing.new("Circle")
 fovCircle.Radius    = CONFIG.SilentAimFOV
 fovCircle.Color     = Color3.fromRGB(255, 60, 80)
@@ -347,6 +639,8 @@ local REDZ = {
     ToggleOff  = Color3.fromRGB(40, 32, 36),
     SliderFill = Color3.fromRGB(200, 30, 50),
     SliderBG   = Color3.fromRGB(35, 28, 32),
+    Green      = Color3.fromRGB(30, 180, 80),
+    GreenDim   = Color3.fromRGB(20, 100, 50),
 }
 
 local mainWindow = Instance.new("Frame")
@@ -523,7 +817,8 @@ local function MakeSectionLabel(parent, text)
     return lbl
 end
 
-local function MakeToggleRow(parent, label, sublabel)
+local function MakeToggleRow(parent, label, sublabel, accentColor)
+    accentColor = accentColor or REDZ.Accent
     local row = Instance.new("Frame", parent)
     row.Size = UDim2.new(1, -8, 0, 52); row.BackgroundColor3 = REDZ.BG2; row.BorderSizePixel = 0
     Instance.new("UICorner", row).CornerRadius = UDim.new(0, 8)
@@ -555,7 +850,7 @@ local function MakeToggleRow(parent, label, sublabel)
     local function SetState(s)
         state = s
         if s then
-            toggleBG.BackgroundColor3   = REDZ.Accent
+            toggleBG.BackgroundColor3   = accentColor
             toggleKnob.BackgroundColor3 = Color3.fromRGB(255,255,255)
             toggleKnob.Position         = UDim2.new(1, -17, 0.5, -7)
             row.BackgroundColor3        = Color3.fromRGB(24, 14, 18)
@@ -639,6 +934,8 @@ local function MakeSliderRow(parent, label, displayMin, displayMax, initPct, uni
 end
 
 -- ── PAGES ─────────────────────────────────────────────────────────────────────
+
+-- COMBAT PAGE
 local combatPage = MakePage(); pages["combat"] = combatPage
 local combatBtn  = MakeSidebarBtn("⚔", "Combat", "combat")
 
@@ -655,43 +952,122 @@ local _, dashGet, _   = MakeToggleRow(combatPage, "Dash Spam",   "Hold Q — aut
 MakeSectionLabel(combatPage, "SILENT AIM")
 local _, silentGet, _ = MakeToggleRow(combatPage, "Silent Aim",
     "Kamera redirect ke target — semua jurus kena")
-
--- FOV slider: 30-300 pixel dari center
 MakeSliderRow(combatPage, "Silent Aim FOV", 30, 300,
-    (CONFIG.SilentAimFOV - 30) / 270,
-    " px",
+    (CONFIG.SilentAimFOV - 30) / 270, " px",
     function(val)
         CONFIG.SilentAimFOV = val
         fovCircle.Radius    = val
-    end
-)
+    end)
 
 MakeSectionLabel(combatPage, "FAST ATTACK")
 local _, fastAtkGet, _ = MakeToggleRow(combatPage, "Fast Attack",
     "FireServer RegisterAttack tanpa delay animasi")
-
--- FIX: slider display = hits per second (1-30)
--- interval = 1/HPS — makin kanan makin cepet
 MakeSliderRow(combatPage, "Attack HPS", 1, 30,
-    (CONFIG.AttackHPS - 1) / 29,
-    " HPS",
-    function(val)
-        CONFIG.AttackHPS = val
-    end
-)
+    (CONFIG.AttackHPS - 1) / 29, " HPS",
+    function(val) CONFIG.AttackHPS = val end)
 
+-- VISUAL PAGE
 local visualPage = MakePage(); pages["visual"] = visualPage
 local visualBtn  = MakeSidebarBtn("👁", "Visual", "visual")
 MakeSectionLabel(visualPage, "ESP")
 local _, espGet, _    = MakeToggleRow(visualPage, "ESP",     "Player boxes, health, distance")
 local _, tracerGet, _ = MakeToggleRow(visualPage, "Tracers", "Lines from screen to players")
 
+-- MOVEMENT PAGE
 local movePage    = MakePage(); pages["movement"] = movePage
 local moveBtn     = MakeSidebarBtn("🏃", "Movement", "movement")
 MakeSectionLabel(movePage, "SPEED")
 local _, speedGet, _ = MakeToggleRow(movePage, "Fast Run", "Override WalkSpeed every frame")
 MakeSliderRow(movePage, "Speed", BASE_SPEED, MAX_SPEED, 0.5, " ws", function(val, pct)
     CONFIG.SpeedPercent = pct * 100
+end)
+
+-- FARM PAGE ──────────────────────────────────────────────────────────────────
+local farmPage = MakePage(); pages["farm"] = farmPage
+local farmBtn  = MakeSidebarBtn("🌾", "Auto Farm", "farm")
+
+-- Status card (live update)
+local statusCard = Instance.new("Frame", farmPage)
+statusCard.Size = UDim2.new(1, -8, 0, 52); statusCard.BackgroundColor3 = REDZ.BG2
+statusCard.BorderSizePixel = 0
+Instance.new("UICorner", statusCard).CornerRadius = UDim.new(0, 8)
+local statusStroke = Instance.new("UIStroke", statusCard)
+statusStroke.Color = REDZ.Stroke; statusStroke.Thickness = 1
+
+local statusIcon = Instance.new("TextLabel", statusCard)
+statusIcon.Size = UDim2.new(0, 20, 1, 0); statusIcon.Position = UDim2.new(0, 12, 0, 0)
+statusIcon.BackgroundTransparency = 1; statusIcon.Text = "○"
+statusIcon.TextColor3 = REDZ.TextSub; statusIcon.Font = Enum.Font.GothamBold; statusIcon.TextSize = 14
+
+local statusTitle = Instance.new("TextLabel", statusCard)
+statusTitle.Size = UDim2.new(1, -60, 0, 20); statusTitle.Position = UDim2.new(0, 36, 0, 6)
+statusTitle.BackgroundTransparency = 1; statusTitle.Text = "AUTO FARM"
+statusTitle.TextColor3 = REDZ.TextSub; statusTitle.Font = Enum.Font.GothamBold; statusTitle.TextSize = 10
+statusTitle.TextXAlignment = Enum.TextXAlignment.Left
+
+local statusText = Instance.new("TextLabel", statusCard)
+statusText.Size = UDim2.new(1, -60, 0, 18); statusText.Position = UDim2.new(0, 36, 0, 26)
+statusText.BackgroundTransparency = 1; statusText.Text = "Idle"
+statusText.TextColor3 = REDZ.TextMain; statusText.Font = Enum.Font.Gotham; statusText.TextSize = 11
+statusText.TextXAlignment = Enum.TextXAlignment.Left
+
+-- Level info card
+local levelCard = Instance.new("Frame", farmPage)
+levelCard.Size = UDim2.new(1, -8, 0, 52); levelCard.BackgroundColor3 = REDZ.BG2
+levelCard.BorderSizePixel = 0
+Instance.new("UICorner", levelCard).CornerRadius = UDim.new(0, 8)
+Instance.new("UIStroke", levelCard).Color = REDZ.Stroke
+
+local levelText = Instance.new("TextLabel", levelCard)
+levelText.Size = UDim2.new(1, -16, 1, 0); levelText.Position = UDim2.new(0, 12, 0, 0)
+levelText.BackgroundTransparency = 1
+levelText.Text = "Level: — | Island: — | Target: —"
+levelText.TextColor3 = REDZ.TextSub; levelText.Font = Enum.Font.Gotham; levelText.TextSize = 11
+levelText.TextXAlignment = Enum.TextXAlignment.Left
+levelText.TextWrapped = true
+
+MakeSectionLabel(farmPage, "MAIN")
+local _, farmGet, farmSet = MakeToggleRow(farmPage, "Auto Farm",
+    "Detect level → fly ke NPC → quest → hover attack", REDZ.Green)
+
+MakeSectionLabel(farmPage, "SETTINGS")
+local _, noclipGet, _ = MakeToggleRow(farmPage, "Noclip",
+    "CanCollide = false saat farm aktif")
+
+MakeSliderRow(farmPage, "Fly Speed", 50, 700,
+    (CONFIG.FarmFlySpeed - 50) / 650, " stud/s",
+    function(val) CONFIG.FarmFlySpeed = val end)
+
+MakeSliderRow(farmPage, "Hover Height", 2, 20,
+    (CONFIG.FarmHoverHeight - 2) / 18, " stud",
+    function(val) CONFIG.FarmHoverHeight = val end)
+
+-- Update status card tiap frame
+RunService.Heartbeat:Connect(function()
+    local _, level = GetFarmData()
+    local farmData = GetFarmData()
+
+    if CONFIG.Mode9 then
+        statusIcon.TextColor3  = REDZ.Green
+        statusIcon.Text        = "●"
+        statusTitle.TextColor3 = REDZ.Green
+        statusCard.BackgroundColor3 = Color3.fromRGB(12, 22, 14)
+        statusStroke.Color     = REDZ.GreenDim
+    else
+        statusIcon.TextColor3  = REDZ.TextSub
+        statusIcon.Text        = "○"
+        statusTitle.TextColor3 = REDZ.TextSub
+        statusCard.BackgroundColor3 = REDZ.BG2
+        statusStroke.Color     = REDZ.Stroke
+    end
+    statusText.Text = farmStatus
+
+    if farmData then
+        levelText.Text = ("Lv %d  |  %s  |  🎯 %s"):format(
+            level or 0, farmData.Island, farmData.MobName)
+    else
+        levelText.Text = ("Lv %d  |  No data — tambah ke LevelDatabase"):format(level or 0)
+    end
 end)
 
 -- ── WIRE ─────────────────────────────────────────────────────────────────────
@@ -722,10 +1098,28 @@ WireToggle(silentGet,  "Mode7", nil, function()
     fovCircle.Visible = false
 end)
 WireToggle(fastAtkGet, "Mode8", StartFastAttack, StopFastAttack)
+WireToggle(farmGet,    "Mode9",
+    function()
+        StartNoclip()
+        StartFarm()
+        farmStatus = "Starting..."
+    end,
+    function()
+        StopFarm()
+        farmStatus = "Idle"
+    end
+)
+
+-- Noclip toggle terpisah (bisa hidup tanpa farm)
+WireToggle(noclipGet, "Mode9",
+    function() if not CONFIG.Mode9 then StartNoclip() end end,
+    function() if not CONFIG.Mode9 then StopNoclip()  end end
+)
 
 combatBtn.MouseButton1Click:Connect(function() SetActivePage("combat")   end)
 visualBtn.MouseButton1Click:Connect(function() SetActivePage("visual")   end)
 moveBtn.MouseButton1Click:Connect(function()   SetActivePage("movement") end)
+farmBtn.MouseButton1Click:Connect(function()   SetActivePage("farm")     end)
 SetActivePage("combat")
 
 local contentVisible = true
@@ -737,7 +1131,7 @@ end)
 
 closeBtn.MouseButton1Click:Connect(function()
     RestoreHitbox(); LocalHumanoid.WalkSpeed = BASE_SPEED
-    HideAllESP(); StopDashLoop(); StopFastAttack()
+    HideAllESP(); StopDashLoop(); StopFastAttack(); StopFarm()
     fovCircle:Remove(); screenGui:Destroy()
 end)
 
@@ -746,6 +1140,12 @@ LocalPlayer.CharacterAdded:Connect(function(char)
     LocalRoot      = char:WaitForChild("HumanoidRootPart")
     LocalHumanoid  = char:WaitForChild("Humanoid")
     OriginalLocalSize = nil; dashHolding = false; silentTarget = nil
+    -- reset farm state setelah respawn
+    if CONFIG.Mode9 then
+        farmState  = FARM_STATE.GO_QUEST
+        waitingFly = false
+        farmStatus = "Respawned — restarting"
+    end
     if CONFIG.Mode5 then LocalHumanoid.WalkSpeed = GetTargetSpeed() end
 end)
 
@@ -755,10 +1155,8 @@ RunService.RenderStepped:Connect(function()
     if CONFIG.Mode2 and LocalRoot then Mode2Func(LocalRoot.Position) end
     if CONFIG.Mode5 then LocalHumanoid.WalkSpeed = GetTargetSpeed() end
 
-    -- silent aim: redirect kamera tiap frame ke target terdekat dalam FOV
     if CONFIG.Mode7 then
         ApplySilentAim()
-        -- tampilkan FOV circle di center screen
         local vp = Camera.ViewportSize
         fovCircle.Position = Vector2.new(vp.X / 2, vp.Y / 2)
         fovCircle.Radius   = CONFIG.SilentAimFOV
