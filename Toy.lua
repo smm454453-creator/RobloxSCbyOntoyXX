@@ -61,6 +61,7 @@ task.spawn(function()
 	end)
 end)
 
+-- FIX: koordinat Tiki Outpost dibenerin, dari (3500,10,5400) laut lepas -> (-16550,55,-14.5)
 local LevelDatabase = {
 	{Sea=1,MinLvl=1,    MaxLvl=9,    Island="Starter Island",   MobFolder="Enemies",MobName="Bandit",             QuestName="BanditQuest",     QuestNum=1,NPCCFrame=CFrame.new(977.8,6.4,1574.1)},
 	{Sea=1,MinLvl=10,   MaxLvl=14,   Island="Jungle",           MobFolder="Enemies",MobName="Monkey",             QuestName="JungleQuest",     QuestNum=1,NPCCFrame=CFrame.new(-1600,36,153)},
@@ -98,8 +99,8 @@ local LevelDatabase = {
 	{Sea=3,MinLvl=2075, MaxLvl=2199, Island="Haunted Castle",   MobFolder="Enemies",MobName="Reborn Skeleton",    QuestName="HauntedQuest",    QuestNum=1,NPCCFrame=CFrame.new(5900,1000,-700)},
 	{Sea=3,MinLvl=2200, MaxLvl=2374, Island="Sea of Treats",    MobFolder="Enemies",MobName="Cookie Crafter",     QuestName="TreatsQuest",     QuestNum=1,NPCCFrame=CFrame.new(-2200,57,-5500)},
 	{Sea=3,MinLvl=2375, MaxLvl=2524, Island="Sea of Treats",    MobFolder="Enemies",MobName="Cake Guard",         QuestName="TreatsQuest",     QuestNum=2,NPCCFrame=CFrame.new(-2200,57,-5500)},
-	{Sea=3,MinLvl=2525, MaxLvl=2674, Island="Tiki Outpost",     MobFolder="Enemies",MobName="Tiki Outpost Guard", QuestName="TikiQuest",       QuestNum=1,NPCCFrame=CFrame.new(3500,10,5400)},
-	{Sea=3,MinLvl=2675, MaxLvl=2799, Island="Tiki Outpost",     MobFolder="Enemies",MobName="Tiki Outpost Guard", QuestName="TikiQuest",       QuestNum=2,NPCCFrame=CFrame.new(3500,10,5400)},
+	{Sea=3,MinLvl=2525, MaxLvl=2674, Island="Tiki Outpost",     MobFolder="Enemies",MobName="Tiki Outpost Guard", QuestName="TikiQuest",       QuestNum=1,NPCCFrame=CFrame.new(-16550,55,-14.5)},
+	{Sea=3,MinLvl=2675, MaxLvl=2799, Island="Tiki Outpost",     MobFolder="Enemies",MobName="Tiki Outpost Guard", QuestName="TikiQuest",       QuestNum=2,NPCCFrame=CFrame.new(-16550,55,-14.5)},
 	{Sea=3,MinLvl=2800, MaxLvl=2999, Island="Mirage Island",    MobFolder="Enemies",MobName="Demonic Soul",       QuestName="MirageQuest",     QuestNum=1,NPCCFrame=CFrame.new(-2800,34,3050)},
 	{Sea=3,MinLvl=3000, MaxLvl=9999, Island="Mirage Island",    MobFolder="Enemies",MobName="Demonic Soul",       QuestName="MirageQuest",     QuestNum=2,NPCCFrame=CFrame.new(-2800,34,3050)},
 }
@@ -117,6 +118,63 @@ local function GetFarmData()
 	return nil, level
 end
 
+-- Dynamic NPC finder: scan workspace dulu, fallback ke database kalau nil
+local NPCCFrameCache = {}
+local NPC_CACHE_TTL = 3
+
+local function ScanForNPC(islandHint)
+	local lowerHint = string.lower(islandHint or "")
+	local candidates = {"NPCs", "QuestGivers", "Quest", "Island"}
+	local searchRoots = {}
+	for _, folderName in ipairs(candidates) do
+		local f = Workspace:FindFirstChild(folderName)
+		if f then table.insert(searchRoots, f) end
+	end
+	table.insert(searchRoots, Workspace)
+
+	for _, root in ipairs(searchRoots) do
+		local ok, descendants = pcall(function() return root:GetDescendants() end)
+		if ok then
+			for _, obj in ipairs(descendants) do
+				if obj:IsA("Model") or obj:IsA("BasePart") then
+					local objName = string.lower(obj.Name)
+					if string.find(objName, "tiki", 1, true) and
+					   (string.find(objName, "quest", 1, true) or string.find(objName, "npc", 1, true) or string.find(objName, "giver", 1, true)) then
+						local part = obj:IsA("BasePart") and obj
+							or obj.PrimaryPart
+							or obj:FindFirstChild("HumanoidRootPart")
+							or obj:FindFirstChildWhichIsA("BasePart")
+						if part then
+							return part.CFrame
+						end
+					end
+				end
+			end
+		end
+	end
+	return nil
+end
+
+local function GetNPCCFrame(farmData)
+	local cacheKey = farmData.QuestName .. farmData.QuestNum
+	local cached = NPCCFrameCache[cacheKey]
+	local now = tick()
+
+	if cached and (now - cached.time) < NPC_CACHE_TTL then
+		return cached.cframe
+	end
+
+	local dynamicCFrame = ScanForNPC(farmData.Island)
+	local finalCFrame = dynamicCFrame or farmData.NPCCFrame
+
+	if finalCFrame and finalCFrame.Position ~= Vector3.zero then
+		NPCCFrameCache[cacheKey] = {cframe = finalCFrame, time = now}
+		return finalCFrame
+	end
+
+	return nil
+end
+
 local noclipConn = nil
 
 local function StartNoclip()
@@ -130,14 +188,6 @@ local function StartNoclip()
 	end)
 end
 
-local function StopNoclip()
-	-- FIX: pisah cek — Mode9 dan Mode10 independen
-	if CONFIG.Mode9 and CONFIG.Mode10 then return end
-	if CONFIG.Mode9 and not CONFIG.Mode10 then return end
-	if not CONFIG.Mode9 and CONFIG.Mode10 then return end
-	if noclipConn then noclipConn:Disconnect() noclipConn = nil end
-end
-
 local function SetPlatformStand(state)
 	local char = LocalPlayer.Character
 	local hum  = char and char:FindFirstChildOfClass("Humanoid")
@@ -145,7 +195,6 @@ local function SetPlatformStand(state)
 end
 
 local function FlyTo(targetCFrame, onDone)
-	-- FIX: guard ketat sebelum tween
 	if not targetCFrame then
 		if onDone then onDone() end
 		return
@@ -161,7 +210,6 @@ local function FlyTo(targetCFrame, onDone)
 		currentFarmTween = nil
 	end
 
-	-- FIX: fresh fetch setiap kali FlyTo dipanggil
 	local char = LocalPlayer.Character
 	local root = char and char:FindFirstChild("HumanoidRootPart")
 	if not root then
@@ -212,7 +260,6 @@ local function HasActiveQuest()
 end
 
 local function FindNearestMob(mobName, mobFolder)
-	-- FIX: fresh fetch, tidak pakai LocalCharacter global
 	local char = LocalPlayer.Character
 	local root = char and char:FindFirstChild("HumanoidRootPart")
 	if not root then return nil end
@@ -221,7 +268,6 @@ local function FindNearestMob(mobName, mobFolder)
 	local best, bestDist = nil, math.huge
 	local lowerTarget = string.lower(mobName)
 	for _, mob in ipairs(folder:GetChildren()) do
-		-- FIX: fuzzy match, bukan exact
 		if string.find(string.lower(mob.Name), lowerTarget, 1, true) then
 			local hum = mob:FindFirstChild("Humanoid")
 			local mr  = mob:FindFirstChild("HumanoidRootPart")
@@ -269,6 +315,7 @@ end
 
 local FARM_STATE = {
 	IDLE       = "idle",
+	WAIT_CHAR  = "wait_char",
 	GO_QUEST   = "go_quest",
 	TAKE_QUEST = "take_quest",
 	GO_MOB     = "go_mob",
@@ -279,10 +326,10 @@ local FARM_STATE = {
 local farmState      = FARM_STATE.IDLE
 local waitingFly     = false
 local waitSpawnTimer = 0
+local charWaitTimer  = 0
 
 local function StartFarm()
 	if farmConn then farmConn:Disconnect() farmConn = nil end
-	-- FIX: cancel tween lama sebelum start baru
 	if currentFarmTween then currentFarmTween:Cancel() currentFarmTween = nil end
 	farmState      = FARM_STATE.GO_QUEST
 	waitingFly     = false
@@ -293,14 +340,24 @@ local function StartFarm()
 		if not CONFIG.Mode9 then return end
 		if waitingFly then return end
 
-		-- FIX: fresh fetch setiap frame, bukan LocalCharacter global
 		local char = LocalPlayer.Character
 		local root = char and char:FindFirstChild("HumanoidRootPart")
 		local hum  = char and char:FindFirstChildOfClass("Humanoid")
 
-		-- FIX: kalau mati/respawn, skip — jangan crash
+		-- FIX: kalau mati/respawn, masuk state nunggu, bukan langsung return diam-diam
 		if not char or not root or not hum or hum.Health <= 0 then
 			if currentFarmTween then currentFarmTween:Cancel() currentFarmTween = nil end
+			farmState  = FARM_STATE.WAIT_CHAR
+			charWaitTimer = 0
+			farmStatus = "Menunggu respawn..."
+			return
+		end
+
+		if farmState == FARM_STATE.WAIT_CHAR then
+			charWaitTimer = charWaitTimer + dt
+			if charWaitTimer < 0.5 then return end
+			farmState  = FARM_STATE.GO_QUEST
+			farmStatus = "Character loaded — lanjut farm"
 			return
 		end
 
@@ -310,23 +367,23 @@ local function StartFarm()
 			return
 		end
 
+		local npcCFrame = GetNPCCFrame(farmData)
+
 		if farmState == FARM_STATE.GO_QUEST then
 			if HasActiveQuest() then
 				farmState  = FARM_STATE.GO_MOB
 				farmStatus = "Quest aktif — hunting"
 				return
 			end
-			-- FIX: validasi NPCCFrame sebelum dipakai
-			local npcPos = farmData.NPCCFrame and farmData.NPCCFrame.Position
-			if not npcPos or npcPos == Vector3.zero then
-				farmStatus = "NPC position invalid"
+			if not npcCFrame then
+				farmStatus = "NPC belum ketemu, diam di tempat..."
 				return
 			end
-			local dist = (npcPos - root.Position).Magnitude
+			local dist = (npcCFrame.Position - root.Position).Magnitude
 			if dist > 20 then
 				farmStatus = "Terbang ke NPC quest..."
 				waitingFly = true
-				FlyTo(farmData.NPCCFrame, function()
+				FlyTo(npcCFrame, function()
 					waitingFly = false
 					farmState  = FARM_STATE.TAKE_QUEST
 				end)
@@ -340,9 +397,8 @@ local function StartFarm()
 				farmStatus = "Quest diterima!"
 				return
 			end
-			local npcPos = farmData.NPCCFrame and farmData.NPCCFrame.Position
-			if not npcPos then farmState = FARM_STATE.GO_QUEST return end
-			local npcDist = (npcPos - root.Position).Magnitude
+			if not npcCFrame then farmState = FARM_STATE.GO_QUEST return end
+			local npcDist = (npcCFrame.Position - root.Position).Magnitude
 			if npcDist > 30 then
 				farmState = FARM_STATE.GO_QUEST
 				return
@@ -376,8 +432,7 @@ local function StartFarm()
 			local mr = mob:FindFirstChild("HumanoidRootPart")
 			if not mr then farmStatus = "Mob no root" return end
 
-			local mobPos  = mr.Position
-			-- FIX: guard mobPos bukan zero
+			local mobPos = mr.Position
 			if mobPos == Vector3.zero then farmStatus = "Mob pos invalid" return end
 			local hoverY  = math.max(mobPos.Y + CONFIG.FarmHoverHeight, MIN_FLY_Y)
 			local hoverCF = CFrame.new(Vector3.new(mobPos.X, hoverY, mobPos.Z))
@@ -411,7 +466,6 @@ local function StartFarm()
 			local mobPos = mr.Position
 			if mobPos == Vector3.zero then farmStatus = "Mob pos invalid" return end
 			local hoverY = math.max(mobPos.Y + CONFIG.FarmHoverHeight, MIN_FLY_Y)
-			-- FIX: fresh hum fetch untuk PlatformStand
 			local freshHum = char:FindFirstChildOfClass("Humanoid")
 			if freshHum then freshHum.PlatformStand = true end
 			root.CFrame  = CFrame.new(Vector3.new(mobPos.X, hoverY, mobPos.Z))
@@ -440,7 +494,6 @@ local function StopFarm()
 	if root then root.AssemblyLinearVelocity = Vector3.zero end
 	local hum = char and char:FindFirstChildOfClass("Humanoid")
 	if hum then hum.PlatformStand = false end
-	-- FIX: StopNoclip hanya kalau Mode10 juga off
 	if not CONFIG.Mode10 then
 		if noclipConn then noclipConn:Disconnect() noclipConn = nil end
 	end
@@ -492,7 +545,6 @@ end
 
 local function GetFastTarget()
 	if silentTarget and silentTarget.Parent then return silentTarget end
-	-- FIX: fresh fetch LocalRoot
 	local char = LocalPlayer.Character
 	local lroot = char and char:FindFirstChild("HumanoidRootPart")
 	if not lroot then return nil end
@@ -652,7 +704,6 @@ fovCircle.Visible   = false
 
 local function RenderESP()
 	if not CONFIG.Mode3 then HideAllESP() return end
-	-- FIX: fresh LocalRoot untuk distance calc
 	local char  = LocalPlayer.Character
 	local lroot = char and char:FindFirstChild("HumanoidRootPart")
 	if not lroot then HideAllESP() return end
@@ -1139,7 +1190,6 @@ WireToggle(silentGet,  "Mode7", nil, function()
 	fovCircle.Visible = false
 end)
 WireToggle(fastAtkGet, "Mode8", StartFastAttack, StopFastAttack)
--- FIX: Mode9 dan Mode10 share noclipConn tapi punya logika stop independen
 WireToggle(farmGet, "Mode9",
 	function() StartNoclip() StartFarm() farmStatus = "Starting..." end,
 	function() StopFarm() end
@@ -1147,7 +1197,6 @@ WireToggle(farmGet, "Mode9",
 WireToggle(noclipGet, "Mode10",
 	function() StartNoclip() end,
 	function()
-		-- FIX: hanya stop noclip kalau farm juga off
 		if not CONFIG.Mode9 then
 			if noclipConn then noclipConn:Disconnect() noclipConn = nil end
 		end
@@ -1182,11 +1231,11 @@ LocalPlayer.CharacterAdded:Connect(function(char)
 	LocalRoot      = char:WaitForChild("HumanoidRootPart")
 	LocalHumanoid  = char:WaitForChild("Humanoid")
 	OriginalLocalSize = nil; dashHolding = false; silentTarget = nil
-	-- FIX: cancel tween lama, reset state bersih
 	if currentFarmTween then currentFarmTween:Cancel() currentFarmTween = nil end
 	waitingFly = false
 	if CONFIG.Mode9 then
-		farmState      = FARM_STATE.GO_QUEST
+		farmState      = FARM_STATE.WAIT_CHAR
+		charWaitTimer  = 0
 		waitSpawnTimer = 0
 		farmStatus     = "Respawned — restarting"
 	end
