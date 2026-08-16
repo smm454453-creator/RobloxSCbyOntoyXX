@@ -37,38 +37,55 @@ local function GetClosestToCenter()
         if not root then continue end
         local sc, onScreen = Camera:WorldToScreenPoint(root.Position)
         if not onScreen then continue end
-        local screenDist = (Vector2.new(sc.X, sc.Y) - center).Magnitude
-        if CONFIG.FOVEnabled and screenDist > CONFIG.FOVRadius then continue end
-        if screenDist < bestDist then
-            bestDist = screenDist; best = plr
-        end
+        local d = (Vector2.new(sc.X, sc.Y) - center).Magnitude
+        if CONFIG.FOVEnabled and d > CONFIG.FOVRadius then continue end
+        if d < bestDist then bestDist = d; best = plr end
     end
     return best
 end
 
-local function GetHitbox(plr)
+local function GetHitboxPart(plr)
     if not plr or not plr.Character then return nil end
-    return plr.Character:FindFirstChild(CONFIG.SilentTarget == "Head" and "Head" or "HumanoidRootPart")
+    local partName = CONFIG.SilentTarget == "Head" and "Head" or "HumanoidRootPart"
+    return plr.Character:FindFirstChild(partName)
 end
 
--- Hook via getrawmetatable — work di Synapse X, KRNL, Fluxus, Solara
-local oldIndex
+-- Hook Mouse.__index via getrawmetatable
+-- Work di Synapse X, KRNL, Solara, Fluxus, Delta
+local hooked = false
 if getrawmetatable and hookmetamethod then
-    local mouseMeta = getrawmetatable(Mouse)
-    oldIndex = hookmetamethod(Mouse, "__index", function(self, key)
-        if CONFIG.SilentAim then
-            local target = GetClosestToCenter()
-            local hitbox = GetHitbox(target)
-            if hitbox then
-                if key == "Hit" then
-                    return CFrame.new(hitbox.Position)
-                elseif key == "Target" then
-                    return hitbox
+    pcall(function()
+        local mt = getrawmetatable(Mouse)
+        local oldIndex = mt.__index
+        hookmetamethod(Mouse, "__index", function(self, key)
+            if CONFIG.SilentAim and (key == "Hit" or key == "Target") then
+                local target = GetClosestToCenter()
+                local hitbox = GetHitboxPart(target)
+                if hitbox then
+                    if key == "Hit" then
+                        return CFrame.new(hitbox.Position)
+                    elseif key == "Target" then
+                        return hitbox
+                    end
                 end
             end
-        end
-        return oldIndex(self, key)
+            return oldIndex(self, key)
+        end)
+        hooked = true
     end)
+end
+
+-- Fallback buat executor yang ga support hookmetamethod:
+-- Override via mlook (MouseLook) — redirect camera aim ke hitbox tiap frame
+-- Ini bikin bullet direction ikut kamera yang di-spoof
+local function UpdateSilentAimFallback()
+    if not CONFIG.SilentAim or hooked then return end
+    local target = GetClosestToCenter()
+    local hitbox = GetHitboxPart(target)
+    if not hitbox then return end
+    -- CFrame camera ke arah hitbox — bullet direction ikut CFrame.LookAt
+    local camPos = Camera.CFrame.Position
+    Camera.CFrame = CFrame.lookAt(camPos, hitbox.Position)
 end
 
 -- ── MOVEMENT ──────────────────────────────────────────────────────────────────
@@ -114,7 +131,7 @@ UserInputService.JumpRequest:Connect(function()
     end
 end)
 
--- ── ESP DRAWING ───────────────────────────────────────────────────────────────
+-- ── ESP DRAWING HELPERS ───────────────────────────────────────────────────────
 local function NewText(size, color)
     local t = Drawing.new("Text")
     t.Size = size or 13; t.Center = true; t.Outline = true
@@ -141,61 +158,61 @@ end
 
 local function NewFill(color)
     local f = Drawing.new("Square"); f.Filled = true
-    f.Color = color or Color3.fromRGB(50,200,80); f.Visible = false
+    f.Color = color or Color3.fromRGB(30,30,30); f.Visible = false
     return f
 end
 
 -- FOV circle
 local fovCircle = Drawing.new("Circle")
-fovCircle.Thickness = 1
+fovCircle.Thickness = 1.2
 fovCircle.Color = Color3.fromRGB(255,255,255)
 fovCircle.Filled = false
 fovCircle.Radius = CONFIG.FOVRadius
 fovCircle.Visible = CONFIG.FOVEnabled
 fovCircle.Position = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)
 
--- ── SKELETON BONES ────────────────────────────────────────────────────────────
--- Pasangan part yang dihubungin garis buat skeleton ESP
-local BONE_PAIRS = {
-    {"Head",              "UpperTorso"},
-    {"UpperTorso",        "LowerTorso"},
-    {"LowerTorso",        "LeftUpperLeg"},
-    {"LowerTorso",        "RightUpperLeg"},
-    {"LeftUpperLeg",      "LeftLowerLeg"},
-    {"RightUpperLeg",     "RightLowerLeg"},
-    {"LeftLowerLeg",      "LeftFoot"},
-    {"RightLowerLeg",     "RightFoot"},
-    {"UpperTorso",        "LeftUpperArm"},
-    {"UpperTorso",        "RightUpperArm"},
-    {"LeftUpperArm",      "LeftLowerArm"},
-    {"RightUpperArm",     "RightLowerArm"},
-    {"LeftLowerArm",      "LeftHand"},
-    {"RightLowerArm",     "RightHand"},
+-- ── SKELETON BONE PAIRS ───────────────────────────────────────────────────────
+local BONES_R15 = {
+    {"Head","UpperTorso"},
+    {"UpperTorso","LowerTorso"},
+    {"LowerTorso","LeftUpperLeg"},
+    {"LowerTorso","RightUpperLeg"},
+    {"LeftUpperLeg","LeftLowerLeg"},
+    {"RightUpperLeg","RightLowerLeg"},
+    {"LeftLowerLeg","LeftFoot"},
+    {"RightLowerLeg","RightFoot"},
+    {"UpperTorso","LeftUpperArm"},
+    {"UpperTorso","RightUpperArm"},
+    {"LeftUpperArm","LeftLowerArm"},
+    {"RightUpperArm","RightLowerArm"},
+    {"LeftLowerArm","LeftHand"},
+    {"RightLowerArm","RightHand"},
 }
 
--- R6 fallback
-local BONE_PAIRS_R6 = {
-    {"Head",       "Torso"},
-    {"Torso",      "Left Leg"},
-    {"Torso",      "Right Leg"},
-    {"Torso",      "Left Arm"},
-    {"Torso",      "Right Arm"},
+local BONES_R6 = {
+    {"Head","Torso"},
+    {"Torso","Left Leg"},
+    {"Torso","Right Leg"},
+    {"Torso","Left Arm"},
+    {"Torso","Right Arm"},
 }
+
+local MAX_BONES = math.max(#BONES_R15, #BONES_R6)
 
 local playerESPData = {}
 
 local function CreatePlayerESP()
     local bones = {}
-    for i = 1, #BONE_PAIRS + #BONE_PAIRS_R6 do
-        bones[i] = NewLine(Color3.fromRGB(255, 255, 255), 1)
+    for i = 1, MAX_BONES do
+        bones[i] = NewLine(Color3.fromRGB(255,255,255), 1)
     end
     return {
-        box      = NewBox(Color3.fromRGB(0, 200, 255), 1.5),
-        nameTag  = NewText(13, Color3.fromRGB(0, 200, 255)),
-        distTag  = NewText(11, Color3.fromRGB(200, 200, 200)),
-        hpBG     = NewFill(Color3.fromRGB(30, 30, 30)),
-        hpFill   = NewFill(Color3.fromRGB(50, 220, 80)),
-        bones    = bones,
+        box     = NewBox(Color3.fromRGB(0,200,255), 1.5),
+        nameTag = NewText(13, Color3.fromRGB(0,200,255)),
+        distTag = NewText(11, Color3.fromRGB(200,200,200)),
+        hpBG    = NewFill(Color3.fromRGB(30,30,30)),
+        hpFill  = NewFill(Color3.fromRGB(50,220,80)),
+        bones   = bones,
     }
 end
 
@@ -211,14 +228,42 @@ local function HidePlayerESP(d)
     for _, l in ipairs(d.bones) do l.Visible = false end
 end
 
+-- Cari foot position — anchor bawah box
+-- R15: LeftFoot / RightFoot, ambil yang Y-nya lebih rendah
+-- R6: Left Leg / Right Leg
+local function GetFootPos(char)
+    local isR15 = char:FindFirstChild("UpperTorso") ~= nil
+    if isR15 then
+        local lf = char:FindFirstChild("LeftFoot")
+        local rf = char:FindFirstChild("RightFoot")
+        if lf and rf then
+            return lf.Position.Y < rf.Position.Y and lf.Position or rf.Position
+        end
+        if lf then return lf.Position end
+        if rf then return rf.Position end
+        local lower = char:FindFirstChild("LowerTorso")
+        if lower then return lower.Position - Vector3.new(0, 1.2, 0) end
+    else
+        local ll = char:FindFirstChild("Left Leg")
+        local rl = char:FindFirstChild("Right Leg")
+        if ll and rl then
+            return ll.Position.Y < rl.Position.Y and ll.Position or rl.Position
+        end
+        if ll then return ll.Position end
+        if rl then return rl.Position end
+        local torso = char:FindFirstChild("Torso")
+        if torso then return torso.Position - Vector3.new(0, 2, 0) end
+    end
+    local root = char:FindFirstChild("HumanoidRootPart")
+    return root and (root.Position - Vector3.new(0, 3, 0)) or Vector3.new(0,0,0)
+end
+
 local function RenderESP()
-    -- Cleanup
     for plr, d in pairs(playerESPData) do
         if not plr or not plr.Parent then
             RemovePlayerESP(d); playerESPData[plr] = nil
         end
     end
-    -- Add new
     for _, plr in ipairs(Players:GetPlayers()) do
         if plr ~= LocalPlayer and not playerESPData[plr] then
             playerESPData[plr] = CreatePlayerESP()
@@ -231,92 +276,98 @@ local function RenderESP()
         end
         if not plr.Character then HidePlayerESP(d); continue end
 
-        local root = plr.Character:FindFirstChild("HumanoidRootPart")
-        local hum  = plr.Character:FindFirstChildWhichIsA("Humanoid")
-        local head = plr.Character:FindFirstChild("Head")
+        local char  = plr.Character
+        local root  = char:FindFirstChild("HumanoidRootPart")
+        local hum   = char:FindFirstChildWhichIsA("Humanoid")
+        local head  = char:FindFirstChild("Head")
         if not root or not hum or not head then HidePlayerESP(d); continue end
-
-        local rootSC, rootOn = Camera:WorldToScreenPoint(root.Position)
-        local headSC, headOn = Camera:WorldToScreenPoint(head.Position + Vector3.new(0, 0.7, 0))
-        if not rootOn or not headOn then HidePlayerESP(d); continue end
 
         local dist = math.floor((root.Position - LocalRoot.Position).Magnitude)
         if dist > 600 then HidePlayerESP(d); continue end
 
-        -- Box ESP
+        -- Head top: head.Position + Y offset setengah head size
+        local headTopWorld = head.Position + Vector3.new(0, head.Size.Y / 2, 0)
+        local footWorld    = GetFootPos(char)
+
+        local scHead, onHead = Camera:WorldToScreenPoint(headTopWorld)
+        local scFoot, onFoot = Camera:WorldToScreenPoint(footWorld)
+
+        if not onHead or not onFoot then HidePlayerESP(d); continue end
+
+        -- Box: dari scHead (atas) ke scFoot (bawah)
+        -- Pastiin scHead.Y < scFoot.Y (head selalu lebih tinggi di screen = Y lebih kecil)
+        local topY    = math.min(scHead.Y, scFoot.Y)
+        local bottomY = math.max(scHead.Y, scFoot.Y)
+        local boxH    = math.max(bottomY - topY, 10)
+        local boxW    = boxH * 0.5
+        local boxX    = scHead.X - boxW / 2
+
         if CONFIG.PlayerESP then
-            local boxH = math.abs(headSC.Y - rootSC.Y) * 2
-            local boxW = boxH * 0.55
-            local boxX = rootSC.X - boxW / 2
-            local boxY = headSC.Y - 4
             local scale = math.clamp(1 - dist/600, 0.3, 1)
-            local tsz = math.floor(10*scale + 3)
+            local tsz   = math.floor(10*scale + 3)
 
             d.box.Size     = Vector2.new(boxW, boxH)
-            d.box.Position = Vector2.new(boxX, boxY)
+            d.box.Position = Vector2.new(boxX, topY)
             d.box.Visible  = true
 
             d.nameTag.Text     = plr.DisplayName
             d.nameTag.Size     = tsz
-            d.nameTag.Position = Vector2.new(rootSC.X, boxY - tsz - 2)
+            d.nameTag.Position = Vector2.new(scHead.X, topY - tsz - 2)
             d.nameTag.Visible  = true
 
             d.distTag.Text     = dist .. "m"
             d.distTag.Size     = math.max(tsz - 2, 9)
-            d.distTag.Position = Vector2.new(rootSC.X, boxY + boxH + 2)
+            d.distTag.Position = Vector2.new(scHead.X, bottomY + 2)
             d.distTag.Visible  = true
 
+            -- HP bar kiri box, vertikal dari bawah ke atas
             local hpPct = math.clamp(hum.Health / math.max(hum.MaxHealth, 1), 0, 1)
             local barX  = boxX - 5
-            local barY  = boxY
-            local barH  = boxH
 
-            d.hpBG.Size     = Vector2.new(3, barH)
-            d.hpBG.Position = Vector2.new(barX, barY)
+            d.hpBG.Size     = Vector2.new(3, boxH)
+            d.hpBG.Position = Vector2.new(barX, topY)
             d.hpBG.Visible  = true
 
-            local fh = math.max(math.floor(barH * hpPct), 1)
+            local fh = math.max(math.floor(boxH * hpPct), 1)
             d.hpFill.Color    = Color3.fromRGB(
                 math.floor(255*(1-hpPct)),
                 math.floor(220*hpPct),
                 50
             )
             d.hpFill.Size     = Vector2.new(3, fh)
-            d.hpFill.Position = Vector2.new(barX, barY + barH - fh)
+            d.hpFill.Position = Vector2.new(barX, topY + boxH - fh)
             d.hpFill.Visible  = true
         else
-            d.box.Visible    = false
-            d.nameTag.Visible = false
-            d.distTag.Visible = false
-            d.hpBG.Visible   = false
-            d.hpFill.Visible  = false
+            d.box.Visible     = false
+            d.nameTag.Visible  = false
+            d.distTag.Visible  = false
+            d.hpBG.Visible    = false
+            d.hpFill.Visible   = false
         end
 
-        -- Skeleton ESP
+        -- Skeleton
         if CONFIG.SkeletonESP then
-            local isR15 = plr.Character:FindFirstChild("UpperTorso") ~= nil
-            local pairs_to_use = isR15 and BONE_PAIRS or BONE_PAIRS_R6
-            for i, pair in ipairs(pairs_to_use) do
-                local partA = plr.Character:FindFirstChild(pair[1])
-                local partB = plr.Character:FindFirstChild(pair[2])
-                local line  = d.bones[i]
-                if partA and partB then
-                    local scA, onA = Camera:WorldToScreenPoint(partA.Position)
-                    local scB, onB = Camera:WorldToScreenPoint(partB.Position)
+            local isR15    = char:FindFirstChild("UpperTorso") ~= nil
+            local bonePairs = isR15 and BONES_R15 or BONES_R6
+            for i, pair in ipairs(bonePairs) do
+                local pA = char:FindFirstChild(pair[1])
+                local pB = char:FindFirstChild(pair[2])
+                local ln = d.bones[i]
+                if pA and pB then
+                    local sA, onA = Camera:WorldToScreenPoint(pA.Position)
+                    local sB, onB = Camera:WorldToScreenPoint(pB.Position)
                     if onA and onB then
-                        line.From    = Vector2.new(scA.X, scA.Y)
-                        line.To      = Vector2.new(scB.X, scB.Y)
-                        line.Color   = Color3.fromRGB(255, 255, 255)
-                        line.Visible = true
+                        ln.From    = Vector2.new(sA.X, sA.Y)
+                        ln.To      = Vector2.new(sB.X, sB.Y)
+                        ln.Visible = true
                     else
-                        line.Visible = false
+                        ln.Visible = false
                     end
                 else
-                    line.Visible = false
+                    ln.Visible = false
                 end
             end
-            -- Hide unused bone lines
-            for i = #pairs_to_use + 1, #d.bones do
+            for i = #bonePairs + 1, MAX_BONES do
                 d.bones[i].Visible = false
             end
         else
@@ -331,37 +382,32 @@ screenGui.Name = "Ontoy_HS"; screenGui.ResetOnSpawn = false
 screenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
 
 local C = {
-    BG         = Color3.fromRGB(10, 10, 14),
-    BG2        = Color3.fromRGB(16, 16, 22),
-    Accent     = Color3.fromRGB(80, 140, 255),
-    AccentDim  = Color3.fromRGB(40, 80, 180),
-    AccentGlow = Color3.fromRGB(120, 180, 255),
-    TextMain   = Color3.fromRGB(230, 235, 255),
-    TextSub    = Color3.fromRGB(100, 110, 140),
-    Stroke     = Color3.fromRGB(40, 50, 80),
-    ToggleOff  = Color3.fromRGB(35, 35, 45),
-    SliderFill = Color3.fromRGB(80, 140, 255),
-    SliderBG   = Color3.fromRGB(30, 32, 45),
-    Red        = Color3.fromRGB(255, 70, 70),
-    Green      = Color3.fromRGB(50, 210, 100),
-    Orange     = Color3.fromRGB(255, 160, 40),
+    BG         = Color3.fromRGB(10,10,14),
+    BG2        = Color3.fromRGB(16,16,22),
+    Accent     = Color3.fromRGB(80,140,255),
+    AccentDim  = Color3.fromRGB(40,80,180),
+    AccentGlow = Color3.fromRGB(120,180,255),
+    TextMain   = Color3.fromRGB(230,235,255),
+    TextSub    = Color3.fromRGB(100,110,140),
+    Stroke     = Color3.fromRGB(40,50,80),
+    ToggleOff  = Color3.fromRGB(35,35,45),
+    SliderFill = Color3.fromRGB(80,140,255),
+    SliderBG   = Color3.fromRGB(30,32,45),
+    Red        = Color3.fromRGB(255,70,70),
+    Green      = Color3.fromRGB(50,210,100),
 }
 
 local mainWindow = Instance.new("Frame")
-mainWindow.Size             = UDim2.new(0, 500, 0, 420)
-mainWindow.Position         = UDim2.new(0.5, -250, 0.5, -210)
-mainWindow.BackgroundColor3 = C.BG
-mainWindow.BorderSizePixel  = 0
-mainWindow.Active           = true
-mainWindow.Draggable        = false
-mainWindow.Parent           = screenGui
-Instance.new("UICorner", mainWindow).CornerRadius = UDim.new(0, 10)
+mainWindow.Size = UDim2.new(0,500,0,420); mainWindow.Position = UDim2.new(0.5,-250,0.5,-210)
+mainWindow.BackgroundColor3 = C.BG; mainWindow.BorderSizePixel = 0
+mainWindow.Active = true; mainWindow.Draggable = false; mainWindow.Parent = screenGui
+Instance.new("UICorner", mainWindow).CornerRadius = UDim.new(0,10)
 local ms = Instance.new("UIStroke", mainWindow); ms.Color = C.Stroke; ms.Thickness = 1.5
 
 local titleBar = Instance.new("Frame", mainWindow)
-titleBar.Size = UDim2.new(1, 0, 0, 42); titleBar.BackgroundColor3 = C.BG2
+titleBar.Size = UDim2.new(1,0,0,42); titleBar.BackgroundColor3 = C.BG2
 titleBar.BorderSizePixel = 0; titleBar.Active = true
-Instance.new("UICorner", titleBar).CornerRadius = UDim.new(0, 10)
+Instance.new("UICorner", titleBar).CornerRadius = UDim.new(0,10)
 
 local dragging, dragMouse, dragPos = false, Vector2.zero, UDim2.new()
 titleBar.InputBegan:Connect(function(i)
@@ -414,7 +460,7 @@ local function MakeWinBtn(xOff, bg, txt)
     Instance.new("UICorner", b).CornerRadius = UDim.new(0,6)
     return b
 end
-local closeBtn    = MakeWinBtn(-34, C.Red,      "✕")
+local closeBtn    = MakeWinBtn(-34, C.Red, "✕")
 local minimizeBtn = MakeWinBtn(-66, C.ToggleOff, "—")
 
 local sidebar = Instance.new("Frame", mainWindow)
@@ -593,85 +639,78 @@ local function MakeSlider(parent, label, dMin, dMax, initPct, unit, onChange)
     end)
 end
 
--- Selector row buat Head / Body
 local function MakeSelector(parent, label, options, default, onChange)
     local row = Instance.new("Frame", parent)
     row.Size = UDim2.new(1,-8,0,52); row.BackgroundColor3 = C.BG2; row.BorderSizePixel = 0
     Instance.new("UICorner", row).CornerRadius = UDim.new(0,8)
     Instance.new("UIStroke", row).Color = C.Stroke
     local tl = Instance.new("TextLabel", row)
-    tl.Size = UDim2.new(0.5,0,1,0); tl.Position = UDim2.new(0,14,0,0)
+    tl.Size = UDim2.new(0.45,0,1,0); tl.Position = UDim2.new(0,14,0,0)
     tl.BackgroundTransparency = 1; tl.Text = label; tl.TextColor3 = C.TextMain
     tl.Font = Enum.Font.GothamBold; tl.TextSize = 12; tl.TextXAlignment = Enum.TextXAlignment.Left
-    local btnFrame = Instance.new("Frame", row)
-    btnFrame.Size = UDim2.new(0, #options * 58, 0, 30)
-    btnFrame.Position = UDim2.new(1, -( #options * 58 + 10), 0.5, -15)
-    btnFrame.BackgroundTransparency = 1; btnFrame.BorderSizePixel = 0
+    local btnW = 56
+    local totalW = #options * (btnW + 4)
+    local bf = Instance.new("Frame", row)
+    bf.Size = UDim2.new(0,totalW,0,30); bf.Position = UDim2.new(1,-(totalW+10),0.5,-15)
+    bf.BackgroundTransparency = 1; bf.BorderSizePixel = 0
     local selected = default
     local btns = {}
+    local function Refresh()
+        for opt, b in pairs(btns) do
+            b.BackgroundColor3 = (opt == selected) and C.Accent or C.ToggleOff
+            b.TextColor3 = (opt == selected) and Color3.fromRGB(255,255,255) or C.TextSub
+        end
+    end
     for i, opt in ipairs(options) do
-        local b = Instance.new("TextButton", btnFrame)
-        b.Size = UDim2.new(0,54,1,0); b.Position = UDim2.new(0,(i-1)*58,0,0)
+        local b = Instance.new("TextButton", bf)
+        b.Size = UDim2.new(0,btnW,1,0); b.Position = UDim2.new(0,(i-1)*(btnW+4),0,0)
         b.Text = opt; b.Font = Enum.Font.GothamBold; b.TextSize = 11
         b.BorderSizePixel = 0
         Instance.new("UICorner", b).CornerRadius = UDim.new(0,6)
         btns[opt] = b
-        local function Refresh()
-            for o, bb in pairs(btns) do
-                bb.BackgroundColor3 = (o == selected) and C.Accent or C.ToggleOff
-                bb.TextColor3 = (o == selected) and Color3.fromRGB(255,255,255) or C.TextSub
-            end
-        end
         b.MouseButton1Click:Connect(function()
             selected = opt; Refresh()
             if onChange then onChange(opt) end
         end)
-        if opt == default then
-            b.BackgroundColor3 = C.Accent; b.TextColor3 = Color3.fromRGB(255,255,255)
-        else
-            b.BackgroundColor3 = C.ToggleOff; b.TextColor3 = C.TextSub
-        end
     end
+    Refresh()
 end
 
 -- ── BUILD PAGES ───────────────────────────────────────────────────────────────
-local aimPage  = MakePage(); pages["aim"]      = aimPage
-local movePageP = MakePage(); pages["movement"] = movePageP
-local espPage  = MakePage(); pages["esp"]      = espPage
+local aimPage   = MakePage(); pages["aim"]      = aimPage
+local movePage  = MakePage(); pages["movement"] = movePage
+local espPage   = MakePage(); pages["esp"]      = espPage
 
-local aimBtn  = MakeSideBtn("🎯", "Aimbot",   "aim")
-local moveBtn = MakeSideBtn("🏃", "Movement", "movement")
-local espBtn  = MakeSideBtn("👁",  "ESP",      "esp")
+local aimBtn  = MakeSideBtn("🎯","Aimbot",   "aim")
+local moveBtn = MakeSideBtn("🏃","Movement", "movement")
+local espBtn  = MakeSideBtn("👁","ESP",       "esp")
 
--- Aim page
 MakeSection(aimPage, "SILENT AIM")
 local _, saGet, _ = MakeToggle(aimPage, "Silent Aim", "Redirect Mouse.Hit ke hitbox target", C.Red)
-MakeSelector(aimPage, "Target", {"Head", "Body"}, "Head", function(val)
+MakeSelector(aimPage, "Target", {"Head","Body"}, "Head", function(val)
     CONFIG.SilentTarget = val == "Head" and "Head" or "HumanoidRootPart"
 end)
 
 MakeSection(aimPage, "FOV")
-local _, fovGet, fovSet = MakeToggle(aimPage, "FOV Circle", "Lingkaran area silent aim aktif")
+local _, fovGet, fovSet = MakeToggle(aimPage, "FOV Circle", "Lingkaran area silent aim")
 fovSet(true)
 MakeSlider(aimPage, "FOV Radius", 10, 400, CONFIG.FOVRadius/400, " px", function(val)
     CONFIG.FOVRadius = val
     fovCircle.Radius = val
 end)
 
--- Movement page
-MakeSection(movePageP, "SPEED")
-local _, frGet, _ = MakeToggle(movePageP, "Fast Run", "Override WalkSpeed")
-MakeSlider(movePageP, "Run Speed", BASE_SPEED, MAX_SPEED, 0.5, " ws", function(val, pct)
+MakeSection(movePage, "SPEED")
+local _, frGet, _ = MakeToggle(movePage, "Fast Run", "Override WalkSpeed")
+MakeSlider(movePage, "Run Speed", BASE_SPEED, MAX_SPEED, 0.5, " ws", function(val, pct)
     CONFIG.SpeedPercent = pct * 100
 end)
-MakeSection(movePageP, "JUMP")
-local _, ijGet, _ = MakeToggle(movePageP, "Infinite Jump", "Lompat terus tanpa batas")
+MakeSection(movePage, "JUMP")
+local _, ijGet, _ = MakeToggle(movePage, "Infinite Jump", "Lompat terus tanpa batas")
 
--- ESP page
 MakeSection(espPage, "PLAYER ESP")
-local _, peGet, _ = MakeToggle(espPage, "Player ESP",   "Box + nama + HP bar — cyan")
+local _, peGet, _ = MakeToggle(espPage, "Player ESP",   "Box + nama + HP bar — anchor foot-to-head")
 MakeSection(espPage, "SKELETON ESP")
-local _, seGet, _ = MakeToggle(espPage, "Skeleton ESP", "Garis tulang seluruh body — R15 + R6")
+local _, seGet, _ = MakeToggle(espPage, "Skeleton ESP", "Garis tulang — R15 + R6 support")
 
 -- ── WIRE ──────────────────────────────────────────────────────────────────────
 local function Wire(getter, key, onOn, onOff)
@@ -686,11 +725,9 @@ local function Wire(getter, key, onOn, onOff)
 end
 
 Wire(saGet,  "SilentAim")
-Wire(fovGet, "FOVEnabled", function()
-    fovCircle.Visible = true
-end, function()
-    fovCircle.Visible = false
-end)
+Wire(fovGet, "FOVEnabled",
+    function() fovCircle.Visible = true  end,
+    function() fovCircle.Visible = false end)
 Wire(frGet,  "FastRun", nil, function() LocalHumanoid.WalkSpeed = BASE_SPEED end)
 Wire(ijGet,  "InfiniteJump")
 Wire(peGet,  "PlayerESP")
@@ -701,11 +738,11 @@ moveBtn.MouseButton1Click:Connect(function() SetPage("movement") end)
 espBtn.MouseButton1Click:Connect(function()  SetPage("esp")      end)
 SetPage("aim")
 
-local contentVisible = true
+local vis = true
 minimizeBtn.MouseButton1Click:Connect(function()
-    contentVisible = not contentVisible
-    sidebar.Visible = contentVisible; contentArea.Visible = contentVisible
-    mainWindow.Size = contentVisible and UDim2.new(0,500,0,420) or UDim2.new(0,500,0,42)
+    vis = not vis
+    sidebar.Visible = vis; contentArea.Visible = vis
+    mainWindow.Size = vis and UDim2.new(0,500,0,420) or UDim2.new(0,500,0,42)
 end)
 closeBtn.MouseButton1Click:Connect(function()
     CONFIG.SilentAim = false; CONFIG.FastRun = false
@@ -727,6 +764,7 @@ end)
 
 RunService.RenderStepped:Connect(function()
     if CONFIG.FastRun then ApplySpeed() end
+    UpdateSilentAimFallback()
     fovCircle.Position = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)
     RenderESP()
 end)
