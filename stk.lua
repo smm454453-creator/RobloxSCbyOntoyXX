@@ -1,6 +1,7 @@
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
 local Camera = Workspace.CurrentCamera
 
@@ -14,12 +15,12 @@ local CONFIG = {
     DoubleJump   = false,
     InfiniteJump = false,
     LootESP      = false,
+    AutoLoot     = false,
     SpeedPercent = 50,
 }
 
 local BASE_SPEED = 16
 local MAX_SPEED  = 100
-local JUMP_POWER = 50
 
 local RARITY_DATA = {
     ["Knife"]         = { rarity = "Common",    color = Color3.fromRGB(180,180,180) },
@@ -75,18 +76,33 @@ local function ApplySpeed()
     LocalHumanoid.WalkSpeed = GetTargetSpeed()
 end
 
--- ── JUMP ──────────────────────────────────────────────────────────────────────
-local jumpCount  = 0
-local maxJumps   = 2
-local isGrounded = false
+-- ── DOUBLE JUMP (FIXED) ───────────────────────────────────────────────────────
+-- Root cause lama: jumpCount di-reset di Landed tapi Landed kadang fire
+-- sebelum apex — jadi double jump kepotong di mid-air.
+-- Fix: track via Freefall entry + cek Y velocity buat ground detection.
+local jumpCount    = 0
+local maxJumps     = 2
+local canDoubleJump = false  -- true hanya setelah jump pertama confirmed freefall
 
 local function OnStateChanged(_, new)
-    if new == Enum.HumanoidStateType.Landed
-    or new == Enum.HumanoidStateType.Running then
-        jumpCount  = 0
-        isGrounded = true
-    elseif new == Enum.HumanoidStateType.Freefall then
-        isGrounded = false
+    if new == Enum.HumanoidStateType.Jumping then
+        -- Jump pertama dari ground: buka slot double jump
+        if jumpCount == 0 then
+            jumpCount = 1
+            canDoubleJump = false
+            task.delay(0.15, function()
+                -- Delay 150ms: pastiin kita beneran naik sebelum buka slot
+                if LocalHumanoid:GetState() == Enum.HumanoidStateType.Freefall
+                or LocalHumanoid:GetState() == Enum.HumanoidStateType.Jumping then
+                    canDoubleJump = true
+                end
+            end)
+        end
+    elseif new == Enum.HumanoidStateType.Landed
+        or new == Enum.HumanoidStateType.Running
+        or new == Enum.HumanoidStateType.RunningNoPhysics then
+        jumpCount     = 0
+        canDoubleJump = false
     end
 end
 
@@ -98,14 +114,22 @@ UserInputService.JumpRequest:Connect(function()
         return
     end
     if CONFIG.DoubleJump then
-        if jumpCount < maxJumps then
-            jumpCount = jumpCount + 1
-            LocalHumanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+        if canDoubleJump and jumpCount < maxJumps then
+            jumpCount     = jumpCount + 1
+            canDoubleJump = false
+            -- Apply upward velocity langsung — lebih reliable dari ChangeState
+            -- karena ChangeState sering di-throttle engine di freefall
+            local rootPart = LocalCharacter:FindFirstChild("HumanoidRootPart")
+            if rootPart and rootPart:IsA("BasePart") then
+                local vel = rootPart.AssemblyLinearVelocity
+                rootPart.AssemblyLinearVelocity = Vector3.new(vel.X, 50, vel.Z)
+            end
         end
+        return
     end
 end)
 
--- ── LOOT ESP ──────────────────────────────────────────────────────────────────
+-- ── LOOT SYSTEM ───────────────────────────────────────────────────────────────
 local lootESP_Objects = {}
 
 local function IsLoot(instance)
@@ -133,6 +157,159 @@ local function GetLootPart(instance)
     return instance
 end
 
+-- Kumpulin semua loot yang ada di workspace sekarang
+local function GetAllLootInstances()
+    local result = {}
+    for _, child in ipairs(Workspace:GetChildren()) do
+        if IsLoot(child) then
+            table.insert(result, child)
+        end
+        if child:IsA("Folder") or child:IsA("Model") then
+            for _, sub in ipairs(child:GetChildren()) do
+                if IsLoot(sub) then
+                    table.insert(result, sub)
+                end
+            end
+        end
+    end
+    return result
+end
+
+-- AUTO LOOT: teleport ke tiap loot satu-satu, ambil via ProximityPrompt / click
+-- Delay 0.35s per loot — cukup buat trigger pickup detection server-side
+local autoLootRunning = false
+
+local function TryPickupLoot(instance)
+    -- Cara 1: fire ProximityPrompt kalau ada
+    local prompt = instance:FindFirstChildWhichIsA("ProximityPrompt", true)
+    if prompt then
+        fireproximityprompt(prompt)
+        return
+    end
+    -- Cara 2: FindFirstChild "PickupEvent" / RemoteEvent dan fire
+    local re = instance:FindFirstChildWhichIsA("RemoteEvent", true)
+    if re then
+        re:FireServer()
+        return
+    end
+    -- Cara 3: click detector fallback
+    local cd = instance:FindFirstChildWhichIsA("ClickDetector", true)
+    if cd then
+        fireclickdetector(cd)
+        return
+    end
+end
+
+local function RunAutoLoot()
+    if autoLootRunning then return end
+    autoLootRunning = true
+    local loots = GetAllLootInstances()
+    -- Sort by distance — ambil yang paling deket dulu
+    table.sort(loots, function(a, b)
+        local pa = GetLootPart(a)
+        local pb = GetLootPart(b)
+        if not pa or not pb then return false end
+        local da = (pa.Position - LocalRoot.Position).Magnitude
+        local db = (pb.Position - LocalRoot.Position).Magnitude
+        return da < db
+    end)
+    for _, loot in ipairs(loots) do
+        if not CONFIG.AutoLoot then break end
+        local part = GetLootPart(loot)
+        if part and loot.Parent then
+            -- Teleport ke posisi loot
+            LocalRoot.CFrame = CFrame.new(part.Position + Vector3.new(0, 3, 0))
+            task.wait(0.1)
+            TryPickupLoot(loot)
+            task.wait(0.35)
+        end
+    end
+    autoLootRunning = false
+end
+
+-- ── TELEPORT ──────────────────────────────────────────────────────────────────
+-- STK map structure: game area biasanya di bawah SpawnLocation / folder "Map"
+-- Lobby biasanya di area dekat SpawnLocation default (0,0,0 area)
+
+local function TeleportToMap()
+    -- Cari semua BasePart dengan nama yang ngindikasiin area main game
+    local targets = {"Map", "GameArea", "Arena", "Stage", "Level", "PlayArea", "Round"}
+    for _, name in ipairs(targets) do
+        local folder = Workspace:FindFirstChild(name)
+            or Workspace:FindFirstChild(name, true)  -- recursive
+        if folder then
+            -- Ambil part pertama yang solid buat dijadiin landing point
+            local function FindSolidPart(obj)
+                if obj:IsA("BasePart") and obj.CanCollide and obj.Size.Y > 0.5 then
+                    return obj
+                end
+                for _, c in ipairs(obj:GetChildren()) do
+                    local found = FindSolidPart(c)
+                    if found then return found end
+                end
+            end
+            local landPart = FindSolidPart(folder)
+            if landPart then
+                LocalRoot.CFrame = CFrame.new(landPart.Position + Vector3.new(0, 5, 0))
+                return true
+            end
+        end
+    end
+    -- Fallback: cari player lain dan teleport ke sana (kalau map ga ketemu by name)
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer and plr.Character then
+            local root = plr.Character:FindFirstChild("HumanoidRootPart")
+            if root then
+                LocalRoot.CFrame = CFrame.new(root.Position + Vector3.new(3, 2, 0))
+                return true
+            end
+        end
+    end
+    return false
+end
+
+local function TeleportToLobby()
+    -- STK lobby biasanya di SpawnLocation atau dekat Vector3(0,0,0)
+    local spawnLoc = Workspace:FindFirstChildWhichIsA("SpawnLocation")
+    if spawnLoc then
+        LocalRoot.CFrame = CFrame.new(spawnLoc.Position + Vector3.new(0, 5, 0))
+        return true
+    end
+    -- Fallback: cari folder lobby by name
+    local lobbyNames = {"Lobby", "Waiting", "WaitingRoom", "WaitArea", "Hub"}
+    for _, name in ipairs(lobbyNames) do
+        local obj = Workspace:FindFirstChild(name)
+            or Workspace:FindFirstChild(name, true)
+        if obj then
+            local function FindPart(o)
+                if o:IsA("BasePart") and o.CanCollide then return o end
+                for _, c in ipairs(o:GetChildren()) do
+                    local f = FindPart(c)
+                    if f then return f end
+                end
+            end
+            local p = FindPart(obj)
+            if p then
+                LocalRoot.CFrame = CFrame.new(p.Position + Vector3.new(0, 5, 0))
+                return true
+            end
+        end
+    end
+    -- Last resort: origin
+    LocalRoot.CFrame = CFrame.new(Vector3.new(0, 10, 0))
+    return true
+end
+
+-- Teleport ke player spesifik (player list dari GUI)
+local function TeleportToPlayer(targetPlayer)
+    if not targetPlayer or not targetPlayer.Character then return false end
+    local root = targetPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if not root then return false end
+    LocalRoot.CFrame = CFrame.new(root.Position + Vector3.new(3, 2, 0))
+    return true
+end
+
+-- ── LOOT ESP ──────────────────────────────────────────────────────────────────
 local function CreateLootLabel()
     local nameTag = Drawing.new("Text")
     nameTag.Size         = 13
@@ -194,8 +371,6 @@ end
 
 local lastLootScan = 0
 
--- FIX: RenderLootESP bersih — duplicate block di luar fungsi dihapus,
--- goto/continue diganti if-else chain biar kompatibel semua executor
 local function RenderLootESP()
     local now = tick()
     if now - lastLootScan > 2 then
@@ -204,9 +379,7 @@ local function RenderLootESP()
     end
 
     if not CONFIG.LootESP then
-        for _, obj in pairs(lootESP_Objects) do
-            HideLootObj(obj)
-        end
+        for _, obj in pairs(lootESP_Objects) do HideLootObj(obj) end
         return
     end
 
@@ -234,11 +407,11 @@ local function RenderLootESP()
                         obj.distTag.Position = Vector2.new(screen.X, screen.Y - 4)
                         obj.distTag.Visible  = true
 
-                        local boxSize        = math.clamp(40 * scale, 14, 40)
-                        obj.box.Color        = rd.color
-                        obj.box.Size         = Vector2.new(boxSize, boxSize)
-                        obj.box.Position     = Vector2.new(screen.X - boxSize/2, screen.Y - boxSize/2)
-                        obj.box.Visible      = true
+                        local boxSize = math.clamp(40 * scale, 14, 40)
+                        obj.box.Color     = rd.color
+                        obj.box.Size      = Vector2.new(boxSize, boxSize)
+                        obj.box.Position  = Vector2.new(screen.X - boxSize/2, screen.Y - boxSize/2)
+                        obj.box.Visible   = true
                     else
                         HideLootObj(obj)
                     end
@@ -271,11 +444,13 @@ local REDZ = {
     ToggleOff  = Color3.fromRGB(40, 32, 36),
     SliderFill = Color3.fromRGB(200, 30, 50),
     SliderBG   = Color3.fromRGB(35, 28, 32),
+    Green      = Color3.fromRGB(50, 200, 80),
+    GreenDim   = Color3.fromRGB(30, 120, 50),
 }
 
 local mainWindow = Instance.new("Frame")
-mainWindow.Size             = UDim2.new(0, 480, 0, 380)
-mainWindow.Position         = UDim2.new(0.5, -240, 0.5, -190)
+mainWindow.Size             = UDim2.new(0, 520, 0, 420)
+mainWindow.Position         = UDim2.new(0.5, -260, 0.5, -210)
 mainWindow.BackgroundColor3 = REDZ.BG
 mainWindow.BorderSizePixel  = 0
 mainWindow.Active           = true
@@ -444,7 +619,8 @@ local function MakeSectionLabel(parent, text)
     return lbl
 end
 
-local function MakeToggleRow(parent, label, sublabel)
+local function MakeToggleRow(parent, label, sublabel, accentColor)
+    local ac = accentColor or REDZ.Accent
     local row = Instance.new("Frame", parent)
     row.Size = UDim2.new(1, -8, 0, 52); row.BackgroundColor3 = REDZ.BG2; row.BorderSizePixel = 0
     Instance.new("UICorner", row).CornerRadius = UDim.new(0, 8)
@@ -476,7 +652,7 @@ local function MakeToggleRow(parent, label, sublabel)
     local function SetState(s)
         state = s
         if s then
-            toggleBG.BackgroundColor3   = REDZ.Accent
+            toggleBG.BackgroundColor3   = ac
             toggleKnob.BackgroundColor3 = Color3.fromRGB(255,255,255)
             toggleKnob.Position         = UDim2.new(1, -17, 0.5, -7)
             row.BackgroundColor3        = Color3.fromRGB(24, 14, 18)
@@ -558,27 +734,139 @@ local function MakeSliderRow(parent, label, dMin, dMax, initPct, unit, onChanged
     return row
 end
 
+-- Action button — buat trigger teleport / auto loot
+local function MakeActionButton(parent, label, sublabel, color, onClick)
+    local row = Instance.new("Frame", parent)
+    row.Size = UDim2.new(1, -8, 0, 52); row.BackgroundColor3 = REDZ.BG2; row.BorderSizePixel = 0
+    Instance.new("UICorner", row).CornerRadius = UDim.new(0, 8)
+    local stroke = Instance.new("UIStroke", row); stroke.Color = REDZ.Stroke; stroke.Thickness = 1
+    local title = Instance.new("TextLabel", row)
+    title.Size = UDim2.new(1, -80, 0, 22); title.Position = UDim2.new(0, 14, 0, 8)
+    title.BackgroundTransparency = 1; title.Text = label
+    title.TextColor3 = REDZ.TextMain; title.Font = Enum.Font.GothamBold; title.TextSize = 12
+    title.TextXAlignment = Enum.TextXAlignment.Left
+    if sublabel then
+        local sub = Instance.new("TextLabel", row)
+        sub.Size = UDim2.new(1, -80, 0, 16); sub.Position = UDim2.new(0, 14, 0, 28)
+        sub.BackgroundTransparency = 1; sub.Text = sublabel
+        sub.TextColor3 = REDZ.TextSub; sub.Font = Enum.Font.Gotham; sub.TextSize = 10
+        sub.TextXAlignment = Enum.TextXAlignment.Left
+    end
+    local btn = Instance.new("TextButton", row)
+    btn.Size = UDim2.new(0, 52, 0, 28); btn.Position = UDim2.new(1, -62, 0.5, -14)
+    btn.BackgroundColor3 = color or REDZ.Accent; btn.BorderSizePixel = 0
+    btn.Text = "GO"; btn.TextColor3 = Color3.fromRGB(255,255,255)
+    btn.Font = Enum.Font.GothamBold; btn.TextSize = 11
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
+    btn.MouseButton1Click:Connect(function()
+        if onClick then onClick() end
+    end)
+    return row, btn
+end
+
+-- Player dropdown teleport
+local function MakePlayerTeleportWidget(parent)
+    local container = Instance.new("Frame", parent)
+    container.Size = UDim2.new(1, -8, 0, 0)
+    container.AutomaticSize = Enum.AutomaticSize.Y
+    container.BackgroundColor3 = REDZ.BG2; container.BorderSizePixel = 0
+    Instance.new("UICorner", container).CornerRadius = UDim.new(0, 8)
+    Instance.new("UIStroke", container).Color = REDZ.Stroke
+    local lay = Instance.new("UIListLayout", container)
+    lay.Padding = UDim.new(0, 4)
+    Instance.new("UIPadding", container).PaddingTop = UDim.new(0, 8)
+    Instance.new("UIPadding", container).PaddingBottom = UDim.new(0, 8)
+
+    local header = Instance.new("TextLabel", container)
+    header.Size = UDim2.new(1, -16, 0, 18)
+    header.BackgroundTransparency = 1; header.Text = "TELEPORT TO PLAYER"
+    header.TextColor3 = REDZ.Accent; header.Font = Enum.Font.GothamBold
+    header.TextSize = 10; header.TextXAlignment = Enum.TextXAlignment.Left
+
+    local function RefreshPlayerList()
+        -- hapus semua entry lama kecuali header
+        for _, child in ipairs(container:GetChildren()) do
+            if child ~= header and child:IsA("Frame") then
+                child:Destroy()
+            end
+        end
+        for _, plr in ipairs(Players:GetPlayers()) do
+            if plr ~= LocalPlayer then
+                local row = Instance.new("Frame", container)
+                row.Size = UDim2.new(1, -8, 0, 36); row.BackgroundColor3 = Color3.fromRGB(26,18,22)
+                row.BorderSizePixel = 0
+                Instance.new("UICorner", row).CornerRadius = UDim.new(0, 6)
+                local nameLabel = Instance.new("TextLabel", row)
+                nameLabel.Size = UDim2.new(1, -60, 1, 0); nameLabel.Position = UDim2.new(0, 10, 0, 0)
+                nameLabel.BackgroundTransparency = 1; nameLabel.Text = plr.DisplayName
+                nameLabel.TextColor3 = REDZ.TextMain; nameLabel.Font = Enum.Font.Gotham
+                nameLabel.TextSize = 12; nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+                local tpBtn = Instance.new("TextButton", row)
+                tpBtn.Size = UDim2.new(0, 44, 0, 24); tpBtn.Position = UDim2.new(1, -52, 0.5, -12)
+                tpBtn.BackgroundColor3 = REDZ.Accent; tpBtn.BorderSizePixel = 0
+                tpBtn.Text = "TP"; tpBtn.TextColor3 = Color3.fromRGB(255,255,255)
+                tpBtn.Font = Enum.Font.GothamBold; tpBtn.TextSize = 11
+                Instance.new("UICorner", tpBtn).CornerRadius = UDim.new(0, 5)
+                tpBtn.MouseButton1Click:Connect(function()
+                    TeleportToPlayer(plr)
+                end)
+            end
+        end
+    end
+
+    RefreshPlayerList()
+    Players.PlayerAdded:Connect(RefreshPlayerList)
+    Players.PlayerRemoving:Connect(function()
+        task.wait(0.1)
+        RefreshPlayerList()
+    end)
+
+    return container
+end
+
 -- ── BUILD PAGES ───────────────────────────────────────────────────────────────
 local movePage = MakePage(); pages["movement"] = movePage
 local moveBtn  = MakeSidebarBtn("🏃", "Movement", "movement")
 
 MakeSectionLabel(movePage, "SPEED")
-local _, fastRunGet, _ = MakeToggleRow(movePage, "Fast Run", "Override WalkSpeed — patch crouch juga")
+local _, fastRunGet, _ = MakeToggleRow(movePage, "Fast Run", "Override WalkSpeed")
 MakeSliderRow(movePage, "Run Speed", BASE_SPEED, MAX_SPEED, 0.5, " ws", function(val, pct)
     CONFIG.SpeedPercent = pct * 100
 end)
 
 MakeSectionLabel(movePage, "JUMP")
-local _, doubleGet,   _ = MakeToggleRow(movePage, "Double Jump",   "Lompat dua kali di udara")
+local _, doubleGet,   _ = MakeToggleRow(movePage, "Double Jump",   "Velocity-based — fixed timing")
 local _, infiniteGet, _ = MakeToggleRow(movePage, "Infinite Jump", "Lompat terus tanpa batas")
 
+-- Visual page
 local visualPage = MakePage(); pages["visual"] = visualPage
 local visualBtn  = MakeSidebarBtn("👁", "Visual", "visual")
 
 MakeSectionLabel(visualPage, "LOOT ESP")
-local _, lootGet, _ = MakeToggleRow(visualPage, "Loot ESP", "Nama + rarity + jarak semua loot di map")
+local _, lootGet, _ = MakeToggleRow(visualPage, "Loot ESP", "Nama + rarity + jarak semua loot")
 
--- ── WIRE ─────────────────────────────────────────────────────────────────────
+-- Utility page
+local utilPage = MakePage(); pages["utility"] = utilPage
+local utilBtn  = MakeSidebarBtn("⚡", "Utility", "utility")
+
+MakeSectionLabel(utilPage, "AUTO LOOT")
+local _, autoLootGet, autoLootSet = MakeToggleRow(utilPage, "Auto Loot", "Teleport + ambil semua loot otomatis", REDZ.Green)
+MakeActionButton(utilPage, "Run Auto Loot", "Sekali jalan — ambil semua loot di map", REDZ.Green, function()
+    task.spawn(RunAutoLoot)
+end)
+
+MakeSectionLabel(utilPage, "TELEPORT")
+MakeActionButton(utilPage, "Teleport to Map", "Masuk ke area game / round aktif", REDZ.Accent, function()
+    TeleportToMap()
+end)
+MakeActionButton(utilPage, "Teleport to Lobby", "Balik ke lobby / waiting room", REDZ.AccentDim, function()
+    TeleportToLobby()
+end)
+
+MakeSectionLabel(utilPage, "TELEPORT TO PLAYER")
+MakePlayerTeleportWidget(utilPage)
+
+-- ── WIRE ──────────────────────────────────────────────────────────────────────
 local function WireToggle(getter, configKey, onEnable, onDisable)
     RunService.Heartbeat:Connect(function()
         local s = getter()
@@ -594,27 +882,32 @@ end
 WireToggle(fastRunGet,  "FastRun", nil, function()
     LocalHumanoid.WalkSpeed = BASE_SPEED
 end)
-WireToggle(doubleGet,   "DoubleJump", function()
+WireToggle(doubleGet, "DoubleJump", function()
     CONFIG.InfiniteJump = false
 end)
 WireToggle(infiniteGet, "InfiniteJump", function()
     CONFIG.DoubleJump = false
 end)
 WireToggle(lootGet, "LootESP")
+WireToggle(autoLootGet, "AutoLoot", function()
+    task.spawn(RunAutoLoot)
+end)
 
 moveBtn.MouseButton1Click:Connect(function()   SetActivePage("movement") end)
 visualBtn.MouseButton1Click:Connect(function() SetActivePage("visual")   end)
+utilBtn.MouseButton1Click:Connect(function()   SetActivePage("utility")  end)
 SetActivePage("movement")
 
 local contentVisible = true
 minimizeBtn.MouseButton1Click:Connect(function()
     contentVisible = not contentVisible
     sidebar.Visible = contentVisible; contentArea.Visible = contentVisible
-    mainWindow.Size = contentVisible and UDim2.new(0, 480, 0, 380) or UDim2.new(0, 480, 0, 42)
+    mainWindow.Size = contentVisible and UDim2.new(0, 520, 0, 420) or UDim2.new(0, 520, 0, 42)
 end)
 
 closeBtn.MouseButton1Click:Connect(function()
     LocalHumanoid.WalkSpeed = BASE_SPEED
+    CONFIG.AutoLoot = false
     for _, obj in pairs(lootESP_Objects) do CleanLootESP(obj) end
     screenGui:Destroy()
 end)
@@ -624,7 +917,8 @@ LocalPlayer.CharacterAdded:Connect(function(char)
     LocalCharacter = char
     LocalRoot      = char:WaitForChild("HumanoidRootPart")
     LocalHumanoid  = char:WaitForChild("Humanoid")
-    jumpCount      = 0; isGrounded = true
+    jumpCount      = 0
+    canDoubleJump  = false
     if stateConn then stateConn:Disconnect() end
     stateConn = LocalHumanoid.StateChanged:Connect(OnStateChanged)
     if CONFIG.FastRun then LocalHumanoid.WalkSpeed = GetTargetSpeed() end
@@ -634,4 +928,13 @@ end)
 RunService.RenderStepped:Connect(function()
     if CONFIG.FastRun then ApplySpeed() end
     RenderLootESP()
+end)
+
+-- Auto loot loop — jalan terus selama toggle aktif
+task.spawn(function()
+    while task.wait(1) do
+        if CONFIG.AutoLoot and not autoLootRunning then
+            RunAutoLoot()
+        end
+    end
 end)
