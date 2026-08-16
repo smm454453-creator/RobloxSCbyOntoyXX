@@ -1,7 +1,6 @@
 -- ============================================================
--- SEA NAVIGATION HUB — Standalone Script
+-- SEA NAVIGATION HUB — Standalone Script (Edited for Blox Fruits)
 -- Style: Ontoy Hub (dark red theme)
--- Semua loop punya cleanup path eksplisit, tidak ada memory leak
 -- ============================================================
 
 local Players          = game:GetService("Players")
@@ -37,23 +36,32 @@ local function GetSeatAndBoat()
 	return seat, boat
 end
 
--- ── STATE — semua connection handle di satu tabel ─────────────────────────────
+-- ── STATE — Semua variabel kontrol ada di sini ─────────────────────────────
 local S = {
 	waterWalkConn   = nil,
 	waterPlatform   = nil,
-	clearVisionConn = nil,   -- boolean flag untuk task.spawn loop
+	waterWalkHeight = 20,
+	
+	clearVisionConn = nil,
+	
 	hoverBoatConn   = nil,
+	hoverHeight     = 45,
+	
 	boatSpeedConn   = nil,
-	collisionConn   = nil,
 	boatSpeedValue  = 100,
+	
+	collisionConn   = nil,
+	
+	walkSpeedConn   = nil,
+	walkSpeedValue  = 16,
+	
+	jumpPowerConn   = nil,
+	jumpPowerValue  = 50,
 }
 
 -- ────────────────────────────────────────────────────────────────────────────
--- 1. WATER WALK
--- Part 50x1x50 transparan, Y dikunci di 20, X/Z ikut HumanoidRootPart
+-- 1. WATER WALK (Customizable Y Offset)
 -- ────────────────────────────────────────────────────────────────────────────
-local WATER_Y = 20
-
 local function StartWaterWalk()
 	if S.waterWalkConn then return end
 
@@ -69,7 +77,7 @@ local function StartWaterWalk()
 	S.waterWalkConn = RunService.RenderStepped:Connect(function()
 		local root = GetRoot()
 		if not root then return end
-		plat.CFrame = CFrame.new(root.Position.X, WATER_Y, root.Position.Z)
+		plat.CFrame = CFrame.new(root.Position.X, S.waterWalkHeight, root.Position.Z)
 	end)
 end
 
@@ -86,7 +94,6 @@ end
 
 -- ────────────────────────────────────────────────────────────────────────────
 -- 2. CLEAR VISION
--- Loop task.spawn, exit via flag S.clearVisionConn = nil
 -- ────────────────────────────────────────────────────────────────────────────
 local function StartClearVision()
 	if S.clearVisionConn then return end
@@ -113,11 +120,8 @@ local function StopClearVision()
 end
 
 -- ────────────────────────────────────────────────────────────────────────────
--- 3. HOVER BOAT
--- Paksa PrimaryPart kapal ke Y=45, pertahankan rotasi
+-- 3. HOVER BOAT (Customizable Y Offset)
 -- ────────────────────────────────────────────────────────────────────────────
-local HOVER_Y = 45
-
 local function StartHoverBoat()
 	if S.hoverBoatConn then return end
 	S.hoverBoatConn = RunService.Heartbeat:Connect(function()
@@ -125,11 +129,11 @@ local function StartHoverBoat()
 		if not seat or not boat then return end
 		local primary = boat.PrimaryPart or seat
 		if not primary then return end
+		
 		local pos = primary.Position
-		if math.abs(pos.Y - HOVER_Y) > 2 then
+		if math.abs(pos.Y - S.hoverHeight) > 2 then
 			local cf = primary.CFrame
-			primary.CFrame = CFrame.new(pos.X, HOVER_Y, pos.Z)
-				* (cf - cf.Position)
+			primary.CFrame = CFrame.new(pos.X, S.hoverHeight, pos.Z) * (cf - cf.Position)
 		end
 	end)
 end
@@ -142,18 +146,22 @@ local function StopHoverBoat()
 end
 
 -- ────────────────────────────────────────────────────────────────────────────
--- 4. BOAT SPEED
--- AssemblyLinearVelocity = LookVector * speed setiap Heartbeat
+-- 4. BOAT SPEED (Bypass Internal Overwrite using CFrame + Throttle)
 -- ────────────────────────────────────────────────────────────────────────────
 local function StartBoatSpeed()
 	if S.boatSpeedConn then return end
-	S.boatSpeedConn = RunService.Heartbeat:Connect(function()
-		local seat, _ = GetSeatAndBoat()
-		if not seat then return end
-		pcall(function()
-			seat.AssemblyLinearVelocity =
-				seat.CFrame.LookVector * S.boatSpeedValue
-		end)
+	S.boatSpeedConn = RunService.Heartbeat:Connect(function(deltaTime)
+		local seat, boat = GetSeatAndBoat()
+		if not seat or not boat then return end
+		
+		-- Cek apakah player lagi nekan tombol gas (W / Maju)
+		if seat.Throttle == 1 then
+			local primary = boat.PrimaryPart or seat
+			if primary then
+				-- Paksa kapal maju pakai CFrame
+				primary.CFrame = primary.CFrame + (primary.CFrame.LookVector * (S.boatSpeedValue * deltaTime))
+			end
+		end
 	end)
 end
 
@@ -165,12 +173,12 @@ local function StopBoatSpeed()
 end
 
 -- ────────────────────────────────────────────────────────────────────────────
--- 5. SMOOTH BOAT COLLISION
--- CanCollide = false semua BasePart di model kapal saat duduk
+-- 5. SMOOTH BOAT COLLISION (Noclip Kapal Tembus Objek di Stepped)
 -- ────────────────────────────────────────────────────────────────────────────
 local function StartSmoothCollision()
 	if S.collisionConn then return end
-	S.collisionConn = RunService.Heartbeat:Connect(function()
+	-- Dipindah ke Stepped agar jalan sebelum physics engine kalkulasi tabrakan
+	S.collisionConn = RunService.Stepped:Connect(function()
 		local seat, boat = GetSeatAndBoat()
 		if not seat or not boat then return end
 		for _, part in ipairs(boat:GetDescendants()) do
@@ -185,6 +193,44 @@ local function StopSmoothCollision()
 	if S.collisionConn then
 		S.collisionConn:Disconnect()
 		S.collisionConn = nil
+	end
+end
+
+-- ────────────────────────────────────────────────────────────────────────────
+-- 6. CHARACTER MOVEMENT (Custom WalkSpeed & JumpPower)
+-- ────────────────────────────────────────────────────────────────────────────
+local function StartWalkSpeed()
+	if S.walkSpeedConn then return end
+	S.walkSpeedConn = RunService.Heartbeat:Connect(function()
+		local hum = GetHumanoid()
+		if hum then
+			hum.WalkSpeed = S.walkSpeedValue
+		end
+	end)
+end
+
+local function StopWalkSpeed()
+	if S.walkSpeedConn then
+		S.walkSpeedConn:Disconnect()
+		S.walkSpeedConn = nil
+	end
+end
+
+local function StartJumpPower()
+	if S.jumpPowerConn then return end
+	S.jumpPowerConn = RunService.Heartbeat:Connect(function()
+		local hum = GetHumanoid()
+		if hum then
+			hum.UseJumpPower = true
+			hum.JumpPower = S.jumpPowerValue
+		end
+	end)
+end
+
+local function StopJumpPower()
+	if S.jumpPowerConn then
+		S.jumpPowerConn:Disconnect()
+		S.jumpPowerConn = nil
 	end
 end
 
@@ -255,7 +301,7 @@ titleText.Font               = Enum.Font.GothamBold
 titleText.TextSize           = 12
 titleText.TextXAlignment     = Enum.TextXAlignment.Left
 
--- drag logic
+-- Drag Logic
 local dragging, dragStart, dragPos = false, Vector2.zero, UDim2.new()
 titleBar.InputBegan:Connect(function(i)
 	if i.UserInputType == Enum.UserInputType.MouseButton1 then
@@ -277,7 +323,7 @@ UserInputService.InputEnded:Connect(function(i)
 	if i.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false end
 end)
 
--- close & minimize buttons
+-- Close & Minimize Buttons
 local function MakeBtn(xOff, bg, txt)
 	local btn = Instance.new("TextButton", titleBar)
 	btn.Size             = UDim2.new(0,26,0,26)
@@ -496,23 +542,51 @@ end
 MakeSectionLabel("WATER SURFACE PLATFORM")
 local waterWalkGet = MakeToggleRow(
 	"Water Walk",
-	"Part 50x1x50 transparan, Y=20 ikut player — jalan di atas air"
+	"Part transparan agar bisa jalan di atas air"
+)
+MakeSliderRow(
+	"Platform Y Offset", 0, 100, 0.2, " Y",
+	function(val) S.waterWalkHeight = val end
+)
+
+MakeSectionLabel("CHARACTER MOVEMENT")
+local walkSpeedGet = MakeToggleRow(
+	"Fast Run",
+	"Custom WalkSpeed untuk lari kencang"
+)
+MakeSliderRow(
+	"WalkSpeed", 16, 300, 0, "",
+	function(val) S.walkSpeedValue = val end
+)
+
+local jumpPowerGet = MakeToggleRow(
+	"High Jump",
+	"Custom JumpPower untuk lompat tinggi"
+)
+MakeSliderRow(
+	"JumpPower", 50, 500, 0, "",
+	function(val) S.jumpPowerValue = val end
 )
 
 MakeSectionLabel("LIGHTING")
 local clearVisionGet = MakeToggleRow(
 	"Clear Vision",
-	"Brightness=2 | FogEnd=100k | Shadows off | Disable Atmosphere"
+	"Hapus kabut dan jadikan terang benderang"
 )
 
 MakeSectionLabel("VEHICLE PHYSICS")
 local hoverBoatGet = MakeToggleRow(
 	"Hover Boat",
-	"Paksa Y kapal ke 45 — mengapung di atas permukaan air"
+	"Paksa kapal melayang di atas permukaan air"
 )
+MakeSliderRow(
+	"Hover Height", 0, 100, 0.45, " Y",
+	function(val) S.hoverHeight = val end
+)
+
 local boatSpeedGet = MakeToggleRow(
 	"Boat Speed",
-	"Dorong seat.AssemblyLinearVelocity = LookVector × speed"
+	"Dorong kapal maju saat W ditekan (CFrame Bypass)"
 )
 MakeSliderRow(
 	"Speed Value", 10, 500, 0.18, " stud/s",
@@ -522,15 +596,25 @@ MakeSliderRow(
 MakeSectionLabel("COLLISION MODIFIER")
 local collisionGet = MakeToggleRow(
 	"Smooth Boat Collision",
-	"Set CanCollide = false semua BasePart kapal saat player duduk"
+	"Noclip Kapal Tembus Batu (RunService.Stepped)"
 )
 
 -- ── MAIN TOGGLE WIRE LOOP ─────────────────────────────────────────────────────
 RunService.Heartbeat:Connect(function()
 	-- Water Walk
 	local ww = waterWalkGet()
-	if ww  and not S.waterWalkConn   then StartWaterWalk()      end
+	if ww  and not S.waterWalkConn   then StartWaterWalk()       end
 	if not ww and S.waterWalkConn    then StopWaterWalk()        end
+
+	-- Fast Run (WalkSpeed)
+	local ws = walkSpeedGet()
+	if ws  and not S.walkSpeedConn   then StartWalkSpeed()       end
+	if not ws and S.walkSpeedConn    then StopWalkSpeed()        end
+
+	-- High Jump (JumpPower)
+	local jp = jumpPowerGet()
+	if jp  and not S.jumpPowerConn   then StartJumpPower()       end
+	if not jp and S.jumpPowerConn    then StopJumpPower()        end
 
 	-- Clear Vision
 	local cv = clearVisionGet()
@@ -566,6 +650,8 @@ end)
 closeBtn.MouseButton1Click:Connect(function()
 	-- cleanup semua loop sebelum destroy
 	StopWaterWalk()
+	StopWalkSpeed()
+	StopJumpPower()
 	StopClearVision()
 	StopHoverBoat()
 	StopBoatSpeed()
