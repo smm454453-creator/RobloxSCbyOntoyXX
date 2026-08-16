@@ -1,5 +1,5 @@
 -- ============================================================
--- ONTOY HUB — Blox Fruits Auto Farm & Quest Framework (FIXED)
+-- ONTOY HUB — Blox Fruits Auto Farm & Quest Framework (REACH & SPAM FIX)
 -- Style: Ontoy Hub (Dark Red Theme - Full UI)
 -- ============================================================
 
@@ -16,7 +16,7 @@ local Config = {
 	AutoQuest = false,
 	SelectedWeapon = "Melee",
 	Weapons = {"Melee", "Sword", "Blox Fruit"},
-	TargetDistance = 8, -- Jarak default (Bisa diatur di GUI sekarang)
+	TargetDistance = 19, -- Diset 19 sesuai screenshot kamu
 }
 
 local State = {
@@ -70,27 +70,32 @@ local function StartFarming()
 	if State.AttackLoop then return end
 	State.AttackLoop = true
 	
-	-- [FIXED] Loop Pencari Musuh dipisah agar tidak bikin Game & UI Freeze (Lag)
 	task.spawn(function()
 		while State.AttackLoop do
 			if Config.AutoFarm then
 				State.CurrentTarget = FindNearestMob()
 			end
-			task.wait(0.2) -- Scan musuh setiap 0.2 detik (sangat ringan)
+			task.wait(0.2) 
 		end
 	end)
 	
-	-- Loop Posisi & Tweening
+	-- Loop Posisi & HITBOX EXPANDER (Jangkauan Luas)
 	State.FarmConn = RunService.Heartbeat:Connect(function()
 		if not Config.AutoFarm then return end
 		local char = LocalPlayer.Character
 		local root = char and char:FindFirstChild("HumanoidRootPart")
 		if not root then return end
 		
-		-- Pastikan target masih ada dan masih hidup
 		if State.CurrentTarget and State.CurrentTarget:FindFirstChild("HumanoidRootPart") and State.CurrentTarget:FindFirstChild("Humanoid") and State.CurrentTarget.Humanoid.Health > 0 then
-			local targetCFrame = State.CurrentTarget.HumanoidRootPart.CFrame
-			-- Posisi di atas musuh disesuaikan dengan Slider GUI agar aman dari hit
+			local targetHRP = State.CurrentTarget.HumanoidRootPart
+			
+			-- [FITUR BARU] Hitbox Expander: Bikin badan musuh jadi raksasa (60x60x60)
+			-- Biar walaupun kamu terbang jauh, pukulanmu tetep kena "badan" nya
+			targetHRP.Size = Vector3.new(60, 60, 60)
+			targetHRP.Transparency = 0.8 -- Dibikin sedikit transparan biar layar ga ketutup musuh
+			targetHRP.CanCollide = false
+			
+			local targetCFrame = targetHRP.CFrame
 			root.CFrame = targetCFrame * CFrame.new(0, Config.TargetDistance, 0) * CFrame.Angles(math.rad(-90), 0, 0)
 			root.Velocity = Vector3.zero
 		else
@@ -98,7 +103,7 @@ local function StartFarming()
 		end
 	end)
 	
-	-- Loop Serangan
+	-- Loop Serangan (FAST ATTACK / SPAM HIT)
 	task.spawn(function()
 		while State.AttackLoop do
 			if Config.AutoFarm and State.CurrentTarget then
@@ -120,7 +125,7 @@ local function StartFarming()
 					end
 				end
 			end
-			task.wait(0.15)
+			task.wait(0.05) -- [FITUR BARU] Delay dikurangi drastis jadi 0.05 detik biar nge-spam banget!
 		end
 	end)
 end
@@ -140,7 +145,6 @@ end
 local screenGui = Instance.new("ScreenGui")
 screenGui.Name = "OntoyHub_AutoFarm"
 screenGui.ResetOnSpawn = false
--- Cek jika GUI sudah ada sebelumnya biar ga double
 if LocalPlayer.PlayerGui:FindFirstChild("OntoyHub_AutoFarm") then
 	LocalPlayer.PlayerGui:FindFirstChild("OntoyHub_AutoFarm"):Destroy()
 end
@@ -156,7 +160,7 @@ local REDZ = {
 }
 
 local mainWindow = Instance.new("Frame")
-mainWindow.Size = UDim2.new(0,420,0,440) -- Diperpanjang sedikit untuk slider
+mainWindow.Size = UDim2.new(0,420,0,440) 
 mainWindow.Position = UDim2.new(0.5,-210,0.5,-190)
 mainWindow.BackgroundColor3 = REDZ.BG
 mainWindow.BorderSizePixel = 0
@@ -286,7 +290,6 @@ local function MakeCycleRow(label, options, initIndex, callback)
 	end)
 end
 
--- [FITUR BARU] Fungsi pembuat Slider UI
 local function MakeSliderRow(label, min, max, default, callback)
 	local row = Instance.new("Frame", contentScroll)
 	row.Size = UDim2.new(1,-8,0,52)
@@ -392,17 +395,15 @@ end)
 
 MakeSectionLabel("FARMING MODES")
 
--- Slider Jarak Terbang
-MakeSliderRow("Fly Distance (Tinggi dari NPC)", 5, 20, Config.TargetDistance, function(value)
+MakeSliderRow("Fly Distance (Tinggi dari NPC)", 5, 30, Config.TargetDistance, function(value)
 	Config.TargetDistance = value
 end)
 
-MakeToggleRow("Auto Farm Level (Quest)", "Otomatis ambil quest sesuai level & arahkan ke NPC", function(state)
+MakeToggleRow("Auto Farm Level (Quest)", "(BETA) Perlu update database NPC", function(state)
 	Config.AutoQuest = state
-	-- Info: Logic Auto Quest butuh mapping data base ratusan NPC. Sementara tombolnya dibiarkan agar UI mu rapi.
 end)
 
-MakeToggleRow("Auto Farm (Nearest Mob)", "Otomatis serang mob terdekat tanpa quest", function(state)
+MakeToggleRow("Auto Farm (Nearest Mob)", "Otomatis serang + Hitbox Expander + Fast Attack", function(state)
 	Config.AutoFarm = state
 	if state then StartFarming() else StopFarming() end
 end)
