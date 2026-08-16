@@ -1,10 +1,9 @@
-    local Players = game:GetService("Players")
+local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
 local Camera = Workspace.CurrentCamera
-local Lighting = game:GetService("Lighting")
 
 local LocalPlayer = Players.LocalPlayer
 local LocalCharacter = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
@@ -12,45 +11,29 @@ local LocalRoot = LocalCharacter:WaitForChild("HumanoidRootPart")
 local LocalHumanoid = LocalCharacter:WaitForChild("Humanoid")
 
 local CONFIG = {
-	AutoEscape     = false,
-	SilentAim      = false,
-	NoRecoil       = false,
-	AutoWallbang   = false,
-	VehicleMods    = false,
-	InfiniteNitro  = false,
-	ESP            = false,
-	Tracers        = false,
-	AutoHeist      = false,
-	SilentAimFOV   = 120,
-	VehicleSpeed   = 2.0,
-	VehicleTorque  = 2.0,
+	AutoEscape   = false,
+	SilentAim    = false,
+	NoRecoil     = false,
+	AutoWallbang = false,
+	VehicleMods  = false,
+	InfiniteNitro= false,
+	ESP          = false,
+	Tracers      = false,
+	SilentAimFOV = 120,
+	VehicleSpeed = 100,
+	VehicleTorque= 2,
 }
 
-local ESP_Objects   = {}
-local silentTarget  = nil
-local heistConn     = nil
-local nitroConn     = nil
-local vehicleConn   = nil
-local escapeConn    = nil
-local noRecoilConn  = nil
+local ESP_Highlights = {}
+local ESP_Tracers    = {}
+local silentTarget   = nil
+local noRecoilConn   = nil
+local nitroConn      = nil
+local escapeRunning  = false
+local lastSeat       = nil
 
-local CRIM_BASE     = Vector3.new(-20, 0, -1600)
-local ESCAPE_POS    = Vector3.new(200, 5, -300)
-local PRISON_MIN    = Vector3.new(-500, -20, -800)
-local PRISON_MAX    = Vector3.new(500,  100, 200)
-
-local HEIST_TARGETS = {
-	{Name="Donut Shop",       Pos=Vector3.new(635, 18, 335),   CashPos=Vector3.new(640, 18, 340)},
-	{Name="Gas Station",      Pos=Vector3.new(-400, 18, 800),  CashPos=Vector3.new(-405, 18, 805)},
-	{Name="Bank",             Pos=Vector3.new(-830, 18, -990), CashPos=Vector3.new(-830, 18, -985)},
-	{Name="Jewelry Store",    Pos=Vector3.new(430, 18, -780),  CashPos=Vector3.new(435, 18, -775)},
-}
-
-local function IsInPrison(pos)
-	return pos.X >= PRISON_MIN.X and pos.X <= PRISON_MAX.X
-		and pos.Y >= PRISON_MIN.Y and pos.Y <= PRISON_MAX.Y
-		and pos.Z >= PRISON_MIN.Z and pos.Z <= PRISON_MAX.Z
-end
+local ESCAPE_OUT  = CFrame.new(-1160, 18, -1380)
+local CRIM_BASE   = Vector3.new(-20, 18, -1600)
 
 local function GetFreshChar()
 	local char = LocalPlayer.Character
@@ -59,49 +42,257 @@ local function GetFreshChar()
 	return char, root, hum
 end
 
-local function TweenTo(targetPos, speed, onDone)
-	local char, root, hum = GetFreshChar()
-	if not root or not hum then if onDone then onDone() end return end
-	if hum then hum.PlatformStand = true end
-	local dist = (targetPos - root.Position).Magnitude
-	local dur  = math.clamp(dist / (speed or 200), 0.5, 15)
-	local info = TweenInfo.new(dur, Enum.EasingStyle.Linear)
-	local tw   = TweenService:Create(root, info, {CFrame = CFrame.new(targetPos)})
-	tw.Completed:Connect(function()
-		local _, r2, h2 = GetFreshChar()
-		if h2 then h2.PlatformStand = false end
-		if onDone then onDone() end
-	end)
-	tw:Play()
-	return tw
+local function IsAlive()
+	local _, _, hum = GetFreshChar()
+	return hum and hum.Health > 0
 end
 
 local function GetTeam(player)
-	local ok, team = pcall(function() return player.Team and player.Team.Name or "" end)
-	if not ok then return "" end
-	return string.lower(team)
+	local ok, name = pcall(function()
+		return player.Team and player.Team.Name or ""
+	end)
+	return ok and string.lower(name) or ""
 end
 
 local function IsEnemy(player)
-	local myTeam  = GetTeam(LocalPlayer)
-	local theirTeam = GetTeam(player)
-	if myTeam == "" or theirTeam == "" then return false end
-	return myTeam ~= theirTeam
+	local mine   = GetTeam(LocalPlayer)
+	local theirs = GetTeam(player)
+	if mine == "" or theirs == "" then return false end
+	return mine ~= theirs
 end
 
+local function StepTeleport(targetCF)
+	local char, root, hum = GetFreshChar()
+	if not root or not hum or hum.Health <= 0 then return end
+	local origin = root.CFrame
+	local steps  = 12
+	for i = 1, steps do
+		if not CONFIG.AutoEscape then break end
+		local alpha = i / steps
+		root.CFrame = origin:Lerp(targetCF, alpha)
+		task.wait(0.05)
+	end
+end
+
+local function StartAutoEscape()
+	if escapeRunning then return end
+	task.spawn(function()
+		escapeRunning = true
+		while CONFIG.AutoEscape do
+			task.wait(0.25)
+			local char, root, hum = GetFreshChar()
+			if not root or not hum or hum.Health <= 0 then continue end
+			local team = GetTeam(LocalPlayer)
+			if string.find(team, "police") then continue end
+			local pos = root.Position
+			local inPrison = pos.X > -500 and pos.X < 500
+				and pos.Y > -20 and pos.Y < 100
+				and pos.Z > -800 and pos.Z < 200
+			if not inPrison then continue end
+			CONFIG.AutoEscape = false
+			StepTeleport(ESCAPE_OUT)
+			task.wait(0.5)
+			local _, r2 = GetFreshChar()
+			if r2 then
+				r2.CFrame = CFrame.new(CRIM_BASE)
+			end
+			break
+		end
+		escapeRunning = false
+	end)
+end
+
+local function ApplyVehicleSeat(seat)
+	if not seat or not seat:IsA("VehicleSeat") then return end
+	pcall(function()
+		seat.MaxSpeed = CONFIG.VehicleSpeed
+		seat.Torque   = CONFIG.VehicleTorque
+	end)
+end
+
+local function WatchSeat()
+	RunService.Heartbeat:Connect(function()
+		if not CONFIG.VehicleMods then return end
+		local char, _, hum = GetFreshChar()
+		if not hum then return end
+		local seat = hum.SeatPart
+		if seat == lastSeat then return end
+		lastSeat = seat
+		if seat and seat:IsA("VehicleSeat") then
+			ApplyVehicleSeat(seat)
+		end
+	end)
+end
+
+local function StartInfiniteNitro()
+	if nitroConn then nitroConn:Disconnect() nitroConn = nil end
+	if not CONFIG.InfiniteNitro then return end
+	nitroConn = RunService.Heartbeat:Connect(function()
+		if not CONFIG.InfiniteNitro then return end
+		for _, v in ipairs(Workspace:GetDescendants()) do
+			if v:IsA("NumberValue") and string.lower(v.Name) == "nitro" then
+				v.Value = 100
+			end
+		end
+	end)
+end
+
+local function ApplyNoRecoil()
+	if noRecoilConn then noRecoilConn:Disconnect() noRecoilConn = nil end
+	if not CONFIG.NoRecoil then return end
+	noRecoilConn = RunService.Heartbeat:Connect(function()
+		task.wait(0.1)
+		if not CONFIG.NoRecoil then return end
+		local char = LocalPlayer.Character
+		if not char then return end
+		local tool = char:FindFirstChildOfClass("Tool")
+		if not tool then return end
+		for _, v in ipairs(tool:GetDescendants()) do
+			if v:IsA("NumberValue") or v:IsA("IntValue") then
+				local n = string.lower(v.Name)
+				if string.find(n,"recoil") or string.find(n,"spread") or string.find(n,"kick") then
+					v.Value = 0
+				end
+			end
+		end
+	end)
+end
+
+local function GetESPColor(player)
+	local team = GetTeam(player)
+	if string.find(team, "police") then
+		return Color3.fromRGB(50, 100, 255), Color3.fromRGB(0, 40, 180)
+	end
+	if string.find(team, "crim") then
+		return Color3.fromRGB(255, 50, 50), Color3.fromRGB(140, 0, 0)
+	end
+	return Color3.fromRGB(200, 200, 200), Color3.fromRGB(80, 80, 80)
+end
+
+local function CreateHighlight(player)
+	local pchar = player.Character
+	if not pchar then return end
+	local fill, outline = GetESPColor(player)
+	local hl = Instance.new("Highlight")
+	hl.FillColor      = fill
+	hl.OutlineColor   = outline
+	hl.FillTransparency    = 0.5
+	hl.OutlineTransparency = 0
+	hl.DepthMode      = Enum.HighlightDepthMode.AlwaysOnTop
+	hl.Adornee        = pchar
+	hl.Parent         = pchar
+	ESP_Highlights[player] = hl
+end
+
+local function RemoveHighlight(player)
+	local hl = ESP_Highlights[player]
+	if hl then
+		pcall(function() hl:Destroy() end)
+		ESP_Highlights[player] = nil
+	end
+end
+
+local function RefreshHighlightColor(player)
+	local hl = ESP_Highlights[player]
+	if not hl then return end
+	local fill, outline = GetESPColor(player)
+	hl.FillColor    = fill
+	hl.OutlineColor = outline
+end
+
+local function SetAllHighlights(enabled)
+	for player, hl in pairs(ESP_Highlights) do
+		pcall(function() hl.Enabled = enabled end)
+	end
+end
+
+for _, p in ipairs(Players:GetPlayers()) do
+	if p ~= LocalPlayer then
+		p.CharacterAdded:Connect(function() task.wait(0.5) if CONFIG.ESP then CreateHighlight(p) end end)
+		if CONFIG.ESP and p.Character then CreateHighlight(p) end
+	end
+end
+Players.PlayerAdded:Connect(function(p)
+	p.CharacterAdded:Connect(function()
+		task.wait(0.5)
+		if CONFIG.ESP then CreateHighlight(p) end
+	end)
+end)
+Players.PlayerRemoving:Connect(function(p)
+	RemoveHighlight(p)
+	local line = ESP_Tracers[p]
+	if line then line:Remove() ESP_Tracers[p] = nil end
+end)
+
+local function UpdateTracers()
+	if not CONFIG.Tracers then
+		for p, line in pairs(ESP_Tracers) do
+			line:Remove()
+			ESP_Tracers[p] = nil
+		end
+		return
+	end
+	local _, lroot = GetFreshChar()
+	local vp = Camera.ViewportSize
+	local origin = Vector2.new(vp.X/2, vp.Y)
+	local seen = {}
+	for _, player in ipairs(Players:GetPlayers()) do
+		if player == LocalPlayer then continue end
+		local pchar = player.Character
+		local proot = pchar and pchar:FindFirstChild("HumanoidRootPart")
+		local phum  = pchar and pchar:FindFirstChild("Humanoid")
+		if not (proot and phum and phum.Health > 0) then
+			local old = ESP_Tracers[player]
+			if old then old:Remove() ESP_Tracers[player] = nil end
+			continue
+		end
+		local screen, onScreen = Camera:WorldToViewportPoint(proot.Position)
+		if not onScreen then
+			local old = ESP_Tracers[player]
+			if old then old:Remove() ESP_Tracers[player] = nil end
+			continue
+		end
+		seen[player] = true
+		local fill, _ = GetESPColor(player)
+		local line = ESP_Tracers[player]
+		if not line then
+			line = Drawing.new("Line")
+			line.Thickness = 1
+			ESP_Tracers[player] = line
+		end
+		line.From    = origin
+		line.To      = Vector2.new(screen.X, screen.Y)
+		line.Color   = fill
+		line.Visible = true
+	end
+	for player, line in pairs(ESP_Tracers) do
+		if not seen[player] then
+			line:Remove()
+			ESP_Tracers[player] = nil
+		end
+	end
+end
+
+local fovCircle     = Drawing.new("Circle")
+fovCircle.Radius    = CONFIG.SilentAimFOV
+fovCircle.Color     = Color3.fromRGB(255, 60, 80)
+fovCircle.Filled    = false
+fovCircle.Thickness = 1
+fovCircle.Visible   = false
+
 local function GetSilentTarget()
-	local vp   = Camera.ViewportSize
-	local cx   = vp.X / 2
-	local cy   = vp.Y / 2
-	local fov  = CONFIG.SilentAimFOV
+	local vp  = Camera.ViewportSize
+	local cx  = vp.X / 2
+	local cy  = vp.Y / 2
+	local fov = CONFIG.SilentAimFOV
 	local best, bestDist = nil, math.huge
 	for _, player in ipairs(Players:GetPlayers()) do
 		if player == LocalPlayer then continue end
 		if not IsEnemy(player) then continue end
-		local char = player.Character
-		if not char then continue end
-		local head = char:FindFirstChild("Head")
-		local hum  = char:FindFirstChild("Humanoid")
+		local pchar = player.Character
+		if not pchar then continue end
+		local head = pchar:FindFirstChild("Head")
+		local hum  = pchar:FindFirstChild("Humanoid")
 		if not (head and hum and hum.Health > 0) then continue end
 		local screen, onScreen = Camera:WorldToViewportPoint(head.Position)
 		if not onScreen then continue end
@@ -124,278 +315,6 @@ local function ApplySilentAim()
 	local camPos    = Camera.CFrame.Position
 	local dir       = (targetPos - camPos).Unit
 	Camera.CFrame   = CFrame.new(camPos, camPos + dir)
-end
-
-local function ApplyNoRecoil()
-	if noRecoilConn then noRecoilConn:Disconnect() noRecoilConn = nil end
-	if not CONFIG.NoRecoil then return end
-	noRecoilConn = RunService.Heartbeat:Connect(function()
-		local char = LocalPlayer.Character
-		if not char then return end
-		local tool = char:FindFirstChildOfClass("Tool")
-		if not tool then return end
-		for _, v in ipairs(tool:GetDescendants()) do
-			if v:IsA("NumberValue") or v:IsA("IntValue") then
-				local n = string.lower(v.Name)
-				if string.find(n, "recoil") or string.find(n, "spread") or string.find(n, "kick") then
-					v.Value = 0
-				end
-			end
-		end
-		pcall(function()
-			local gunModule = tool:FindFirstChild("GunSystem") or tool:FindFirstChild("Shared")
-			if gunModule and gunModule:IsA("ModuleScript") then end
-		end)
-	end)
-end
-
-local function ApplyWallbang()
-	if not CONFIG.AutoWallbang then return end
-	RunService.Heartbeat:Connect(function()
-		if not CONFIG.AutoWallbang then return end
-		local char = LocalPlayer.Character
-		if not char then return end
-		local tool = char:FindFirstChildOfClass("Tool")
-		if not tool then return end
-		for _, v in ipairs(tool:GetDescendants()) do
-			if v:IsA("RaycastParams") then
-				pcall(function() v.FilterDescendantsInstances = {} end)
-			end
-		end
-	end)
-end
-
-local function StartVehicleMods()
-	if vehicleConn then vehicleConn:Disconnect() vehicleConn = nil end
-	if not CONFIG.VehicleMods then return end
-	vehicleConn = RunService.Heartbeat:Connect(function()
-		if not CONFIG.VehicleMods then return end
-		local char = LocalPlayer.Character
-		if not char then return end
-		local seat = char:FindFirstChildOfClass("VehicleSeat")
-		if not seat then
-			for _, v in ipairs(Workspace:GetDescendants()) do
-				if v:IsA("VehicleSeat") and v.Occupant then
-					local occ = v.Occupant
-					local occChar = occ.Parent
-					if occChar == char then seat = v break end
-				end
-			end
-		end
-		if not seat then return end
-		local chassis = seat.Parent
-		if not chassis then return end
-		for _, v in ipairs(chassis:GetDescendants()) do
-			if v:IsA("VehicleSeat") then
-				pcall(function() v.MaxSpeed = 100 * CONFIG.VehicleSpeed end)
-				pcall(function() v.Torque   = 50  * CONFIG.VehicleTorque end)
-			end
-			if v:IsA("BodyVelocity") or v:IsA("LinearVelocityConstraint") then
-				pcall(function() v.MaxForce = Vector3.new(1e6, 1e6, 1e6) end)
-			end
-		end
-	end)
-end
-
-local function StartInfiniteNitro()
-	if nitroConn then nitroConn:Disconnect() nitroConn = nil end
-	if not CONFIG.InfiniteNitro then return end
-	nitroConn = RunService.Heartbeat:Connect(function()
-		if not CONFIG.InfiniteNitro then return end
-		for _, v in ipairs(Workspace:GetDescendants()) do
-			if v:IsA("NumberValue") and string.lower(v.Name) == "nitro" then
-				v.Value = 100
-			end
-		end
-	end)
-end
-
-local function StartAutoEscape()
-	if escapeConn then escapeConn:Disconnect() escapeConn = nil end
-	if not CONFIG.AutoEscape then return end
-	escapeConn = RunService.Heartbeat:Connect(function()
-		if not CONFIG.AutoEscape then return end
-		local char, root, hum = GetFreshChar()
-		if not root or not hum or hum.Health <= 0 then return end
-		if not IsInPrison(root.Position) then return end
-		local team = GetTeam(LocalPlayer)
-		if string.find(team, "police") then return end
-		escapeConn:Disconnect()
-		escapeConn = nil
-		TweenTo(ESCAPE_POS, 300, function()
-			task.wait(0.5)
-			TweenTo(CRIM_BASE, 400)
-		end)
-	end)
-end
-
-local heistActive = false
-local function StartAutoHeist()
-	if heistConn then heistConn:Disconnect() heistConn = nil end
-	if not CONFIG.AutoHeist then return end
-	heistActive = true
-	task.spawn(function()
-		while CONFIG.AutoHeist do
-			local char, root, hum = GetFreshChar()
-			if not root or not hum or hum.Health <= 0 then task.wait(1) continue end
-			local team = GetTeam(LocalPlayer)
-			if string.find(team, "police") then task.wait(1) continue end
-
-			local nearest, nearestDist = nil, math.huge
-			for _, target in ipairs(HEIST_TARGETS) do
-				local dist = (target.Pos - root.Position).Magnitude
-				if dist < nearestDist then
-					nearestDist = dist
-					nearest     = target
-				end
-			end
-			if not nearest then task.wait(1) continue end
-
-			TweenTo(nearest.Pos, 350)
-			task.wait(3)
-
-			local char2, root2 = GetFreshChar()
-			if not root2 then task.wait(1) continue end
-
-			for _, obj in ipairs(Workspace:GetDescendants()) do
-				if not CONFIG.AutoHeist then break end
-				local dist = (obj.AbsolutePosition and (obj.AbsolutePosition - nearest.CashPos).Magnitude)
-					or (obj:IsA("BasePart") and (obj.Position - nearest.CashPos).Magnitude)
-					or math.huge
-				if dist < 30 then
-					pcall(function()
-						for _, pp in ipairs(obj:GetDescendants()) do
-							if pp:IsA("ProximityPrompt") then
-								fireproximityprompt(pp)
-							end
-						end
-					end)
-				end
-			end
-			task.wait(2)
-
-			local char3, root3 = GetFreshChar()
-			if root3 then
-				TweenTo(CRIM_BASE, 400)
-				task.wait(5)
-			end
-		end
-		heistActive = false
-	end)
-end
-
-local fovCircle    = Drawing.new("Circle")
-fovCircle.Radius   = CONFIG.SilentAimFOV
-fovCircle.Color    = Color3.fromRGB(255, 60, 80)
-fovCircle.Filled   = false
-fovCircle.Thickness = 1
-fovCircle.Visible  = false
-
-local function GetESPColor(player)
-	local team = GetTeam(player)
-	if string.find(team, "police") then return Color3.fromRGB(50, 100, 255) end
-	if string.find(team, "crim")   then return Color3.fromRGB(255, 50, 50)  end
-	return Color3.fromRGB(200, 200, 200)
-end
-
-local function CreateESP(player)
-	local color = GetESPColor(player)
-	local esp = {
-		Box       = Drawing.new("Square"),
-		Line      = Drawing.new("Line"),
-		NameTag   = Drawing.new("Text"),
-		HealthBar = Drawing.new("Square"),
-	}
-	esp.Box.Thickness  = 1
-	esp.Box.Color      = color
-	esp.Box.Filled     = false
-	esp.Box.Visible    = false
-	esp.Line.Thickness = 1
-	esp.Line.Color     = color
-	esp.Line.Visible   = false
-	esp.NameTag.Size   = 13
-	esp.NameTag.Color  = Color3.fromRGB(255, 255, 255)
-	esp.NameTag.Center = true
-	esp.NameTag.Outline = true
-	esp.NameTag.OutlineColor = Color3.fromRGB(0, 0, 0)
-	esp.NameTag.Visible = false
-	esp.HealthBar.Thickness = 1
-	esp.HealthBar.Filled    = true
-	esp.HealthBar.Visible   = false
-	return esp
-end
-
-local function CleanupESP(p)
-	local esp = ESP_Objects[p]
-	if not esp then return end
-	esp.Box:Remove(); esp.Line:Remove()
-	esp.NameTag:Remove(); esp.HealthBar:Remove()
-	ESP_Objects[p] = nil
-end
-
-local function HideESP(esp)
-	esp.Box.Visible      = false
-	esp.NameTag.Visible  = false
-	esp.Line.Visible     = false
-	esp.HealthBar.Visible = false
-end
-
-local function HideAllESP()
-	for _, esp in pairs(ESP_Objects) do HideESP(esp) end
-end
-
-for _, p in ipairs(Players:GetPlayers()) do
-	if p ~= LocalPlayer then ESP_Objects[p] = CreateESP(p) end
-end
-Players.PlayerAdded:Connect(function(p)
-	ESP_Objects[p] = CreateESP(p)
-end)
-Players.PlayerRemoving:Connect(function(p)
-	CleanupESP(p)
-end)
-
-local function RenderESP()
-	local char, lroot = GetFreshChar()
-	if not lroot then HideAllESP() return end
-	for player, esp in pairs(ESP_Objects) do
-		if not CONFIG.ESP then HideESP(esp) continue end
-		local pchar = player.Character
-		if not pchar then HideESP(esp) continue end
-		local root = pchar:FindFirstChild("HumanoidRootPart")
-		local hum  = pchar:FindFirstChild("Humanoid")
-		local head = pchar:FindFirstChild("Head")
-		if not (root and hum and head and hum.Health > 0) then HideESP(esp) continue end
-		local rs, onScreen = Camera:WorldToViewportPoint(root.Position)
-		local hs           = Camera:WorldToViewportPoint(head.Position)
-		if not onScreen then HideESP(esp) continue end
-		local color  = GetESPColor(player)
-		local height = math.max(math.abs(rs.Y - hs.Y) * 2, 10)
-		local width  = height * 0.5
-		local boxPos = Vector2.new(rs.X - width/2, rs.Y - height/2)
-		esp.Box.Size     = Vector2.new(width, height)
-		esp.Box.Position = boxPos
-		esp.Box.Color    = color
-		esp.Box.Visible  = true
-		local hpR  = hum.Health / hum.MaxHealth
-		local barH = height * hpR
-		esp.HealthBar.Size     = Vector2.new(4, barH)
-		esp.HealthBar.Position = Vector2.new(boxPos.X - 7, boxPos.Y + (height - barH))
-		esp.HealthBar.Color    = Color3.fromRGB(math.floor(255*(1-hpR)), math.floor(255*hpR), 0)
-		esp.HealthBar.Visible  = true
-		local dist = math.floor((root.Position - lroot.Position).Magnitude)
-		esp.NameTag.Text     = player.Name .. " [" .. math.floor(hum.Health) .. "hp | " .. dist .. "m]"
-		esp.NameTag.Position = Vector2.new(rs.X, boxPos.Y - 16)
-		esp.NameTag.Visible  = true
-		if CONFIG.Tracers then
-			local sc = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y)
-			esp.Line.From    = sc
-			esp.Line.To      = Vector2.new(rs.X, rs.Y)
-			esp.Line.Color   = color
-			esp.Line.Visible = true
-		else
-			esp.Line.Visible = false
-		end
-	end
 end
 
 local screenGui = Instance.new("ScreenGui")
@@ -441,7 +360,7 @@ Instance.new("UICorner", titleBar).CornerRadius = UDim.new(0, 10)
 local dragging = false; local dragStart = Vector2.zero; local dragPos = UDim2.new()
 titleBar.InputBegan:Connect(function(input)
 	if input.UserInputType == Enum.UserInputType.MouseButton1 then
-		dragging = true
+		dragging  = true
 		dragStart = Vector2.new(input.Position.X, input.Position.Y)
 		dragPos   = mainWindow.Position
 	end
@@ -498,7 +417,7 @@ local function MakeWindowBtn(parent, xOff, bg, txt)
 	btn.Position         = UDim2.new(1, xOff, 0.5, -13)
 	btn.BackgroundColor3 = bg
 	btn.Text             = txt
-	btn.TextColor3       = Color3.fromRGB(255, 255, 255)
+	btn.TextColor3       = Color3.fromRGB(255,255,255)
 	btn.Font             = Enum.Font.GothamBold
 	btn.TextSize         = 11
 	btn.BorderSizePixel  = 0
@@ -597,7 +516,7 @@ local function SetActivePage(id)
 	for bid, sb in pairs(sidebarButtons) do
 		local active = (bid == id)
 		sb.btn.BackgroundTransparency = active and 0 or 1
-		sb.btn.BackgroundColor3       = active and Color3.fromRGB(30, 18, 22) or REDZ.ToggleOff
+		sb.btn.BackgroundColor3       = active and Color3.fromRGB(30,18,22) or REDZ.ToggleOff
 		sb.icon.TextColor3            = active and REDZ.AccentGlow or REDZ.TextSub
 		sb.label.TextColor3           = active and REDZ.TextMain   or REDZ.TextSub
 		sb.bar.Visible                = active
@@ -668,7 +587,7 @@ local function MakeToggleRow(parent, label, sublabel, accentColor)
 		state = s
 		if s then
 			toggleBG.BackgroundColor3   = accentColor
-			toggleKnob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+			toggleKnob.BackgroundColor3 = Color3.fromRGB(255,255,255)
 			toggleKnob.Position         = UDim2.new(1, -17, 0.5, -7)
 			row.BackgroundColor3        = Color3.fromRGB(24, 14, 18)
 			stroke.Color                = REDZ.AccentDim
@@ -730,7 +649,7 @@ local function MakeSliderRow(parent, label, dMin, dMax, initPct, unit, onChanged
 	local knob = Instance.new("Frame", sliderBG)
 	knob.Size        = UDim2.new(0, 14, 0, 14)
 	knob.Position    = UDim2.new(initPct, -7, 0.5, -7)
-	knob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	knob.BackgroundColor3 = Color3.fromRGB(255,255,255)
 	knob.BorderSizePixel  = 0
 	Instance.new("UICorner", knob).CornerRadius = UDim.new(0, 7)
 	local knobRing = Instance.new("UIStroke", knob)
@@ -769,47 +688,61 @@ local function MakeSliderRow(parent, label, dMin, dMax, initPct, unit, onChanged
 	return row
 end
 
-local escapePage = MakePage(); pages["escape"] = escapePage
-local escapeBtn  = MakeSidebarBtn("🔓", "Escape", "escape")
+local escapePage = MakePage(); pages["escape"]  = escapePage
+local escapeBtn  = MakeSidebarBtn("🔓", "Escape",  "escape")
 MakeSectionLabel(escapePage, "AUTO ESCAPE")
-local _, escGet, _ = MakeToggleRow(escapePage, "Auto Escape", "Tween keluar penjara ke Crim Base otomatis")
+local _, escGet, _ = MakeToggleRow(escapePage, "Auto Escape",
+	"Step-TP keluar penjara ke Crim Base (AC-safe)")
 
-local combatPage = MakePage(); pages["combat"] = combatPage
-local combatBtn2 = MakeSidebarBtn("⚔", "Combat", "combat")
+local combatPage  = MakePage(); pages["combat"]  = combatPage
+local combatSBtn  = MakeSidebarBtn("⚔",  "Combat",  "combat")
 MakeSectionLabel(combatPage, "SILENT AIM")
-local _, silentGet, _ = MakeToggleRow(combatPage, "Silent Aim", "Redirect kamera ke Head musuh terdekat")
+local _, silentGet, _ = MakeToggleRow(combatPage, "Silent Aim",
+	"Redirect kamera ke Head musuh terdekat dalam FOV")
 MakeSliderRow(combatPage, "FOV Radius", 30, 400, (CONFIG.SilentAimFOV-30)/370, " px", function(val)
 	CONFIG.SilentAimFOV = val
 	fovCircle.Radius    = val
 end)
 MakeSectionLabel(combatPage, "WEAPON")
-local _, noRecoilGet, _ = MakeToggleRow(combatPage, "No Recoil / No Spread", "Set recoil & spread values ke 0")
-local _, wallbangGet, _ = MakeToggleRow(combatPage, "Auto Wallbang", "Bypass raycast filter — peluru tembus dinding")
+local _, noRecoilGet, _ = MakeToggleRow(combatPage, "No Recoil / No Spread",
+	"Set recoil & spread NumberValues ke 0 tiap 0.1s")
 
 local vehiclePage = MakePage(); pages["vehicle"] = vehiclePage
-local vehicleBtn  = MakeSidebarBtn("🚗", "Vehicle", "vehicle")
+local vehicleSBtn = MakeSidebarBtn("🚗", "Vehicle", "vehicle")
 MakeSectionLabel(vehiclePage, "MODS")
-local _, vehicleGet, _ = MakeToggleRow(vehiclePage, "Vehicle Mods", "Override MaxSpeed dan Torque kendaraan")
-MakeSliderRow(vehiclePage, "Speed Multiplier", 1, 10, 0.1, "x", function(val)
+local _, vehicleGet, _ = MakeToggleRow(vehiclePage, "Vehicle Speed",
+	"Set MaxSpeed & Torque saat duduk di VehicleSeat")
+MakeSliderRow(vehiclePage, "Max Speed", 50, 500, (CONFIG.VehicleSpeed-50)/450, " stud/s", function(val)
 	CONFIG.VehicleSpeed = val
+	local char, _, hum = GetFreshChar()
+	if hum then
+		local seat = hum.SeatPart
+		if seat and seat:IsA("VehicleSeat") then
+			pcall(function() seat.MaxSpeed = val end)
+		end
+	end
 end)
-MakeSliderRow(vehiclePage, "Torque Multiplier", 1, 10, 0.1, "x", function(val)
+MakeSliderRow(vehiclePage, "Torque", 1, 20, (CONFIG.VehicleTorque-1)/19, "x", function(val)
 	CONFIG.VehicleTorque = val
+	local char, _, hum = GetFreshChar()
+	if hum then
+		local seat = hum.SeatPart
+		if seat and seat:IsA("VehicleSeat") then
+			pcall(function() seat.Torque = val end)
+		end
+	end
 end)
 MakeSectionLabel(vehiclePage, "NITRO")
-local _, nitroGet, _ = MakeToggleRow(vehiclePage, "Infinite Nitro", "Lock nitro value ke 100% setiap frame")
+local _, nitroGet, _ = MakeToggleRow(vehiclePage, "Infinite Nitro",
+	"Lock nilai nitro ke 100% via Heartbeat")
 
-local espPage = MakePage(); pages["esp"] = espPage
-local espBtn  = MakeSidebarBtn("👁", "ESP", "esp")
+local espPage  = MakePage(); pages["esp"]  = espPage
+local espSBtn  = MakeSidebarBtn("👁", "ESP",     "esp")
 MakeSectionLabel(espPage, "WALLHACK")
-local _, espGet, _     = MakeToggleRow(espPage, "ESP",     "Box, Health, Name — Biru=Police Merah=Crim")
-local _, tracerGet, _  = MakeToggleRow(espPage, "Tracers", "Lines dari tengah layar ke player")
-
-local heistPage = MakePage(); pages["heist"] = heistPage
-local heistBtn  = MakeSidebarBtn("💰", "Heist", "heist")
-MakeSectionLabel(heistPage, "AUTO HEIST")
-local _, heistGet, _ = MakeToggleRow(heistPage, "Auto Heist",
-	"Tween ke store → ambil cash → balik Crim Base", REDZ.Blue)
+local _, espGet, _    = MakeToggleRow(espPage, "ESP Highlight",
+	"Highlight instance — Biru=Police Merah=Crim (ringan)")
+local _, tracerGet, _ = MakeToggleRow(espPage, "Tracers",
+	"Drawing Line ke setiap player — auto cleanup per frame")
 
 local function WireToggle(getter, configKey, onEnable, onDisable)
 	RunService.Heartbeat:Connect(function()
@@ -822,45 +755,55 @@ local function WireToggle(getter, configKey, onEnable, onDisable)
 	end)
 end
 
-WireToggle(escGet,      "AutoEscape",    StartAutoEscape,   function() if escapeConn then escapeConn:Disconnect() escapeConn = nil end end)
-WireToggle(silentGet,   "SilentAim",     nil,               function() silentTarget = nil fovCircle.Visible = false end)
-WireToggle(noRecoilGet, "NoRecoil",      ApplyNoRecoil,     ApplyNoRecoil)
-WireToggle(wallbangGet, "AutoWallbang",  ApplyWallbang)
-WireToggle(vehicleGet,  "VehicleMods",   StartVehicleMods,  function() if vehicleConn then vehicleConn:Disconnect() vehicleConn = nil end end)
-WireToggle(nitroGet,    "InfiniteNitro", StartInfiniteNitro,function() if nitroConn  then nitroConn:Disconnect()   nitroConn = nil   end end)
-WireToggle(espGet,      "ESP",           nil,               HideAllESP)
-WireToggle(tracerGet,   "Tracers",       nil,               function() for _, esp in pairs(ESP_Objects) do esp.Line.Visible = false end end)
-WireToggle(heistGet,    "AutoHeist",     StartAutoHeist,    function() CONFIG.AutoHeist = false end)
+WireToggle(escGet,      "AutoEscape",    StartAutoEscape,    nil)
+WireToggle(silentGet,   "SilentAim",     nil,                function() silentTarget = nil fovCircle.Visible = false end)
+WireToggle(noRecoilGet, "NoRecoil",      ApplyNoRecoil,      ApplyNoRecoil)
+WireToggle(vehicleGet,  "VehicleMods",   function() lastSeat = nil end, function() lastSeat = nil end)
+WireToggle(nitroGet,    "InfiniteNitro", StartInfiniteNitro, function() if nitroConn then nitroConn:Disconnect() nitroConn = nil end end)
+WireToggle(espGet,      "ESP",
+	function()
+		for _, p in ipairs(Players:GetPlayers()) do
+			if p ~= LocalPlayer and p.Character then CreateHighlight(p) end
+		end
+	end,
+	function()
+		for p in pairs(ESP_Highlights) do RemoveHighlight(p) end
+	end
+)
+WireToggle(tracerGet, "Tracers", nil, function()
+	for p, line in pairs(ESP_Tracers) do
+		line:Remove(); ESP_Tracers[p] = nil
+	end
+end)
 
 escapeBtn.MouseButton1Click:Connect(function()  SetActivePage("escape")  end)
-combatBtn2.MouseButton1Click:Connect(function() SetActivePage("combat")  end)
-vehicleBtn.MouseButton1Click:Connect(function() SetActivePage("vehicle") end)
-espBtn.MouseButton1Click:Connect(function()     SetActivePage("esp")     end)
-heistBtn.MouseButton1Click:Connect(function()   SetActivePage("heist")   end)
+combatSBtn.MouseButton1Click:Connect(function()  SetActivePage("combat")  end)
+vehicleSBtn.MouseButton1Click:Connect(function() SetActivePage("vehicle") end)
+espSBtn.MouseButton1Click:Connect(function()     SetActivePage("esp")     end)
 SetActivePage("escape")
 
 local contentVisible = true
 minimizeBtn.MouseButton1Click:Connect(function()
-	contentVisible = not contentVisible
-	sidebar.Visible      = contentVisible
-	contentArea.Visible  = contentVisible
-	mainWindow.Size = contentVisible and UDim2.new(0, 580, 0, 400) or UDim2.new(0, 580, 0, 42)
+	contentVisible      = not contentVisible
+	sidebar.Visible     = contentVisible
+	contentArea.Visible = contentVisible
+	mainWindow.Size = contentVisible
+		and UDim2.new(0, 580, 0, 400)
+		or  UDim2.new(0, 580, 0, 42)
 end)
 
 closeBtn.MouseButton1Click:Connect(function()
 	CONFIG.AutoEscape    = false
 	CONFIG.SilentAim     = false
 	CONFIG.NoRecoil      = false
-	CONFIG.AutoWallbang  = false
 	CONFIG.VehicleMods   = false
 	CONFIG.InfiniteNitro = false
 	CONFIG.ESP           = false
-	CONFIG.AutoHeist     = false
-	HideAllESP()
-	if escapeConn  then escapeConn:Disconnect()  end
-	if vehicleConn then vehicleConn:Disconnect() end
-	if nitroConn   then nitroConn:Disconnect()   end
+	CONFIG.Tracers       = false
+	for p in pairs(ESP_Highlights) do RemoveHighlight(p) end
+	for p, line in pairs(ESP_Tracers) do line:Remove() ESP_Tracers[p] = nil end
 	if noRecoilConn then noRecoilConn:Disconnect() end
+	if nitroConn    then nitroConn:Disconnect()    end
 	fovCircle:Remove()
 	screenGui:Destroy()
 end)
@@ -870,12 +813,21 @@ LocalPlayer.CharacterAdded:Connect(function(char)
 	LocalRoot      = char:WaitForChild("HumanoidRootPart")
 	LocalHumanoid  = char:WaitForChild("Humanoid")
 	silentTarget   = nil
+	lastSeat       = nil
+	task.wait(1)
+	if CONFIG.ESP then
+		for _, p in ipairs(Players:GetPlayers()) do
+			if p ~= LocalPlayer and p.Character then CreateHighlight(p) end
+		end
+	end
 	if CONFIG.AutoEscape then
-		task.wait(1)
 		StartAutoEscape()
 	end
 end)
 
+WatchSeat()
+
+local tracerTick = 0
 RunService.RenderStepped:Connect(function()
 	if CONFIG.SilentAim then
 		ApplySilentAim()
@@ -886,5 +838,13 @@ RunService.RenderStepped:Connect(function()
 	else
 		fovCircle.Visible = false
 	end
-	RenderESP()
+	local now = tick()
+	if CONFIG.Tracers and (now - tracerTick) >= 0.05 then
+		tracerTick = now
+		UpdateTracers()
+	elseif not CONFIG.Tracers then
+		for p, line in pairs(ESP_Tracers) do
+			line:Remove(); ESP_Tracers[p] = nil
+		end
+	end
 end)
