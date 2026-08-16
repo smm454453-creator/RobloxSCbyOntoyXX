@@ -32,14 +32,12 @@ local function IsVisible(bone, targetChar)
 	local dir    = (bone.Position - camPos)
 	local dist   = dir.Magnitude
 	if dist < 0.1 then return true end
-
 	local params = RaycastParams.new()
 	params.FilterType = Enum.RaycastFilterType.Exclude
 	local excluded = {}
 	if myChar then table.insert(excluded, myChar) end
 	if targetChar then table.insert(excluded, targetChar) end
 	params.FilterDescendantsInstances = excluded
-
 	local result = Workspace:Raycast(camPos, dir.Unit * dist, params)
 	return result == nil
 end
@@ -55,22 +53,17 @@ local function GetBestTarget()
 		if p == LP then continue end
 		local pc = p.Character
 		if not pc then continue end
-
 		local bone = pc:FindFirstChild(CONFIG.TargetBone)
 			or pc:FindFirstChild("HumanoidRootPart")
 		local hum = pc:FindFirstChildOfClass("Humanoid")
 		if not bone or not hum or hum.Health <= 0 then continue end
-
 		local sc, onScreen = Camera:WorldToViewportPoint(bone.Position)
 		if not onScreen or sc.Z <= 0 then continue end
-
 		local dx = sc.X - cx
 		local dy = sc.Y - cy
 		local d  = math.sqrt(dx*dx + dy*dy)
 		if d >= CONFIG.SilentFOV then continue end
-
 		if not IsVisible(bone, pc) then continue end
-
 		if d < bestD then
 			bestD = d
 			best  = bone
@@ -87,16 +80,12 @@ local function HookNamecall()
 	local old
 	old = hookmetamethod(game, "__namecall", function(self, ...)
 		if not CONFIG.SilentAim then return old(self, ...) end
-
 		local m    = getnamecallmethod()
 		local bone = GetBestTarget()
-
 		if not bone or not bone.Parent then return old(self, ...) end
-
 		local bPos = bone.Position
 		local camP = Camera.CFrame.Position
 		local dir  = (bPos - camP).Unit
-
 		if m == "FireServer" or m == "InvokeServer" or m == "Fire" then
 			local args = {...}
 			for i, v in ipairs(args) do
@@ -112,12 +101,10 @@ local function HookNamecall()
 			end
 			return old(self, table.unpack(args))
 		end
-
 		if m == "Raycast" and self == Workspace then
 			local params = select(3, ...)
 			return old(self, camP, dir * 2048, params)
 		end
-
 		if m == "FindPartOnRay"
 		or m == "FindPartOnRayWithIgnoreList"
 		or m == "FindPartOnRayWithWhitelist" then
@@ -125,7 +112,6 @@ local function HookNamecall()
 			args[1] = Ray.new(camP, dir * 2048)
 			return old(self, table.unpack(args))
 		end
-
 		return old(self, ...)
 	end)
 end
@@ -664,7 +650,7 @@ local sbESP    = MakeSideBtn("👁","ESP",       "esp")
 
 SecLabel(pgCombat, "SILENT HIT")
 local _, saGet, _ = Toggle(pgCombat, "Silent Hit",
-	"Namecall redirect — tembok skip, peluru nempel", C.Red)
+	"Camera snap + namecall hook — tembok skip", C.Red)
 BoneCycle(pgCombat)
 Slider(pgCombat, "FOV Radius", 5, 400, (CONFIG.SilentFOV-5)/395, " px", function(v)
 	CONFIG.SilentFOV = v; fovCircle.Radius = v
@@ -740,6 +726,16 @@ RunService.RenderStepped:Connect(function()
 	fovCircle.Position = Vector2.new(vp.X/2, vp.Y/2)
 	fovCircle.Visible  = CONFIG.SilentAim
 	fovCircle.Radius   = CONFIG.SilentFOV
+
+	if CONFIG.SilentAim then
+		local bone = GetBestTarget()
+		if bone and bone.Parent then
+			local camPos = Camera.CFrame.Position
+			local dir    = (bone.Position - camPos).Unit
+			Camera.CFrame = CFrame.new(camPos, camPos + dir)
+		end
+	end
+
 	local now = tick()
 	if now - espTick >= 0.05 then
 		espTick = now
