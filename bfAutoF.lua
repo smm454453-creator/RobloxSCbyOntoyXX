@@ -1,5 +1,5 @@
 -- ============================================================
--- ONTOY HUB — Blox Fruits Auto Farm & Quest Framework
+-- ONTOY HUB — Blox Fruits Auto Farm & Quest Framework (FIXED)
 -- Style: Ontoy Hub (Dark Red Theme - Full UI)
 -- ============================================================
 
@@ -16,7 +16,7 @@ local Config = {
 	AutoQuest = false,
 	SelectedWeapon = "Melee",
 	Weapons = {"Melee", "Sword", "Blox Fruit"},
-	TargetDistance = 8, -- Dinaikin ke 8 stud biar ga gampang kena hit musuh
+	TargetDistance = 8, -- Jarak default (Bisa diatur di GUI sekarang)
 }
 
 local State = {
@@ -70,29 +70,35 @@ local function StartFarming()
 	if State.AttackLoop then return end
 	State.AttackLoop = true
 	
-	-- Loop Posisi & Tweening Sederhana
+	-- [FIXED] Loop Pencari Musuh dipisah agar tidak bikin Game & UI Freeze (Lag)
+	task.spawn(function()
+		while State.AttackLoop do
+			if Config.AutoFarm then
+				State.CurrentTarget = FindNearestMob()
+			end
+			task.wait(0.2) -- Scan musuh setiap 0.2 detik (sangat ringan)
+		end
+	end)
+	
+	-- Loop Posisi & Tweening
 	State.FarmConn = RunService.Heartbeat:Connect(function()
 		if not Config.AutoFarm then return end
 		local char = LocalPlayer.Character
 		local root = char and char:FindFirstChild("HumanoidRootPart")
 		if not root then return end
 		
-		-- [SISTEM AUTO QUEST PLACEHOLDER]
-		if Config.AutoQuest then
-			-- Logika deteksi level player otomatis ambil quest ke NPC terdekat
-			-- (Memerlukan database ratusan NPC pulau aktif)
-		end
-		
-		State.CurrentTarget = FindNearestMob()
-		if State.CurrentTarget and State.CurrentTarget:FindFirstChild("HumanoidRootPart") then
+		-- Pastikan target masih ada dan masih hidup
+		if State.CurrentTarget and State.CurrentTarget:FindFirstChild("HumanoidRootPart") and State.CurrentTarget:FindFirstChild("Humanoid") and State.CurrentTarget.Humanoid.Health > 0 then
 			local targetCFrame = State.CurrentTarget.HumanoidRootPart.CFrame
-			-- Posisi di atas musuh disesuaikan dengan TargetDistance agar aman dari hit
+			-- Posisi di atas musuh disesuaikan dengan Slider GUI agar aman dari hit
 			root.CFrame = targetCFrame * CFrame.new(0, Config.TargetDistance, 0) * CFrame.Angles(math.rad(-90), 0, 0)
 			root.Velocity = Vector3.zero
+		else
+			State.CurrentTarget = nil
 		end
 	end)
 	
-	-- Loop Serangan (Anti-Lag & Masuk Damage)
+	-- Loop Serangan
 	task.spawn(function()
 		while State.AttackLoop do
 			if Config.AutoFarm and State.CurrentTarget then
@@ -134,6 +140,10 @@ end
 local screenGui = Instance.new("ScreenGui")
 screenGui.Name = "OntoyHub_AutoFarm"
 screenGui.ResetOnSpawn = false
+-- Cek jika GUI sudah ada sebelumnya biar ga double
+if LocalPlayer.PlayerGui:FindFirstChild("OntoyHub_AutoFarm") then
+	LocalPlayer.PlayerGui:FindFirstChild("OntoyHub_AutoFarm"):Destroy()
+end
 screenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
 
 local REDZ = {
@@ -146,7 +156,7 @@ local REDZ = {
 }
 
 local mainWindow = Instance.new("Frame")
-mainWindow.Size = UDim2.new(0,420,0,380)
+mainWindow.Size = UDim2.new(0,420,0,440) -- Diperpanjang sedikit untuk slider
 mainWindow.Position = UDim2.new(0.5,-210,0.5,-190)
 mainWindow.BackgroundColor3 = REDZ.BG
 mainWindow.BorderSizePixel = 0
@@ -234,6 +244,7 @@ local contentLayout = Instance.new("UIListLayout", contentScroll)
 contentLayout.Padding = UDim.new(0,6)
 contentLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
 Instance.new("UIPadding", contentScroll).PaddingTop = UDim.new(0,8)
+Instance.new("UIPadding", contentScroll).PaddingBottom = UDim.new(0,8)
 
 local function MakeSectionLabel(text)
 	local lbl = Instance.new("TextLabel", contentScroll)
@@ -272,6 +283,57 @@ local function MakeCycleRow(label, options, initIndex, callback)
 		if currentIndex > #options then currentIndex = 1 end
 		btn.Text = options[currentIndex]
 		if callback then callback(options[currentIndex]) end
+	end)
+end
+
+-- [FITUR BARU] Fungsi pembuat Slider UI
+local function MakeSliderRow(label, min, max, default, callback)
+	local row = Instance.new("Frame", contentScroll)
+	row.Size = UDim2.new(1,-8,0,52)
+	row.BackgroundColor3 = REDZ.BG2
+	Instance.new("UICorner", row).CornerRadius = UDim.new(0,8)
+	local stroke = Instance.new("UIStroke", row); stroke.Color = REDZ.Stroke; stroke.Thickness = 1
+
+	local titleLbl = Instance.new("TextLabel", row)
+	titleLbl.Size = UDim2.new(1,-28,0,22); titleLbl.Position = UDim2.new(0,14,0,6)
+	titleLbl.BackgroundTransparency = 1; titleLbl.Text = label .. " : " .. tostring(default)
+	titleLbl.TextColor3 = REDZ.TextMain; titleLbl.Font = Enum.Font.GothamBold
+	titleLbl.TextSize = 12; titleLbl.TextXAlignment = Enum.TextXAlignment.Left
+
+	local sliderBG = Instance.new("TextButton", row)
+	sliderBG.Size = UDim2.new(1,-28,0,10); sliderBG.Position = UDim2.new(0,14,0,32)
+	sliderBG.BackgroundColor3 = REDZ.SliderBG; sliderBG.Text = ""
+	Instance.new("UICorner", sliderBG).CornerRadius = UDim.new(0,5)
+
+	local sliderFill = Instance.new("Frame", sliderBG)
+	sliderFill.Size = UDim2.new((default - min) / (max - min), 0, 1, 0)
+	sliderFill.BackgroundColor3 = REDZ.SliderFill
+	Instance.new("UICorner", sliderFill).CornerRadius = UDim.new(0,5)
+	
+	local draggingSlider = false
+	local function updateSlider(input)
+		local pos = math.clamp((input.Position.X - sliderBG.AbsolutePosition.X) / sliderBG.AbsoluteSize.X, 0, 1)
+		sliderFill.Size = UDim2.new(pos, 0, 1, 0)
+		local val = math.floor(min + ((max - min) * pos))
+		titleLbl.Text = label .. " : " .. tostring(val)
+		if callback then callback(val) end
+	end
+
+	sliderBG.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+			draggingSlider = true
+			updateSlider(input)
+		end
+	end)
+
+	UserInputService.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 then draggingSlider = false end
+	end)
+
+	UserInputService.InputChanged:Connect(function(input)
+		if draggingSlider and input.UserInputType == Enum.UserInputType.MouseMovement then
+			updateSlider(input)
+		end
 	end)
 end
 
@@ -329,8 +391,15 @@ MakeCycleRow("Select Weapon", Config.Weapons, 1, function(selected)
 end)
 
 MakeSectionLabel("FARMING MODES")
+
+-- Slider Jarak Terbang
+MakeSliderRow("Fly Distance (Tinggi dari NPC)", 5, 20, Config.TargetDistance, function(value)
+	Config.TargetDistance = value
+end)
+
 MakeToggleRow("Auto Farm Level (Quest)", "Otomatis ambil quest sesuai level & arahkan ke NPC", function(state)
 	Config.AutoQuest = state
+	-- Info: Logic Auto Quest butuh mapping data base ratusan NPC. Sementara tombolnya dibiarkan agar UI mu rapi.
 end)
 
 MakeToggleRow("Auto Farm (Nearest Mob)", "Otomatis serang mob terdekat tanpa quest", function(state)
@@ -343,7 +412,7 @@ local contentVisible = true
 minimizeBtn.MouseButton1Click:Connect(function()
 	contentVisible = not contentVisible
 	contentScroll.Visible = contentVisible
-	mainWindow.Size = contentVisible and UDim2.new(0,420,0,380) or UDim2.new(0,420,0,42)
+	mainWindow.Size = contentVisible and UDim2.new(0,420,0,440) or UDim2.new(0,420,0,42)
 end)
 
 closeBtn.MouseButton1Click:Connect(function()
