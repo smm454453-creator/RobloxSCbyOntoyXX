@@ -22,14 +22,18 @@ local CONFIG = {
 	ESP           = false,
 	Tracers       = false,
 	SilentAimFOV  = 120,
+	FastRun       = false,
+	WalkSpeed     = 16,
 }
 
 local ESP_Highlights = {}
 local ESP_Tracers    = {}
+local ESP_Labels     = {}
 local silentTarget   = nil
 local noRecoilConn   = nil
 local vehiclePushConn= nil
 local nitroConn      = nil
+local walkSpeedConn  = nil
 local escapeRunning  = false
 local lastSeat       = nil
 
@@ -56,38 +60,6 @@ local function IsEnemy(player)
 	if mine == "" or theirs == "" then return false end
 	return mine ~= theirs
 end
-
--- Silent Aim: namecall hook redirects FireServer ray origin toward target bone
-local hookedMeta = false
-local function HookNamecall()
-	if hookedMeta then return end
-	hookedMeta = true
-	local oldNamecall
-	oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
-		if not CONFIG.SilentAim then return oldNamecall(self, ...) end
-		local method = getnamecallmethod()
-		if method == "FireServer" or method == "InvokeServer" then
-			local args = {...}
-			if silentTarget and silentTarget.Parent then
-				for i, v in ipairs(args) do
-					if typeof(v) == "Instance" and v:IsA("BasePart") then
-						args[i] = silentTarget
-					elseif typeof(v) == "Ray" then
-						local camPos = Camera.CFrame.Position
-						local dir    = (silentTarget.Position - camPos).Unit
-						args[i]      = Ray.new(camPos, dir * 1000)
-					elseif typeof(v) == "CFrame" then
-						args[i] = CFrame.new(silentTarget.Position)
-					end
-				end
-			end
-			return oldNamecall(self, table.unpack(args))
-		end
-		return oldNamecall(self, ...)
-	end)
-end
-
-pcall(HookNamecall)
 
 local function GetSilentTarget()
 	local vp    = Camera.ViewportSize
@@ -117,6 +89,59 @@ local function GetSilentTarget()
 	return best
 end
 
+local hookedMeta = false
+local function HookNamecall()
+	if hookedMeta then return end
+	hookedMeta = true
+	local oldNamecall
+	oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
+		local method = getnamecallmethod()
+
+		if CONFIG.SilentAim and silentTarget and silentTarget.Parent then
+			if method == "FireServer" or method == "InvokeServer" then
+				local args = {...}
+				for i, v in ipairs(args) do
+					if typeof(v) == "Instance" and v:IsA("BasePart") then
+						args[i] = silentTarget
+					elseif typeof(v) == "Ray" then
+						local camPos = Camera.CFrame.Position
+						local dir    = (silentTarget.Position - camPos).Unit
+						args[i]      = Ray.new(camPos, dir * 1000)
+					elseif typeof(v) == "CFrame" then
+						args[i] = CFrame.new(silentTarget.Position)
+					elseif typeof(v) == "Vector3" then
+						args[i] = silentTarget.Position
+					end
+				end
+				return oldNamecall(self, table.unpack(args))
+			end
+
+			if method == "Raycast" and self == Workspace then
+				local args = {...}
+				local camPos = Camera.CFrame.Position
+				local dir    = (silentTarget.Position - camPos).Unit
+				args[1] = camPos
+				args[2] = dir * 1000
+				return oldNamecall(self, table.unpack(args))
+			end
+
+			if method == "FindPartOnRayWithIgnoreList"
+			or method == "FindPartOnRay"
+			or method == "FindPartOnRayWithWhitelist" then
+				local args = {...}
+				local camPos = Camera.CFrame.Position
+				local dir    = (silentTarget.Position - camPos).Unit
+				args[1] = Ray.new(camPos, dir * 1000)
+				return oldNamecall(self, table.unpack(args))
+			end
+		end
+
+		return oldNamecall(self, ...)
+	end)
+end
+
+pcall(HookNamecall)
+
 local function ApplySilentAim()
 	if not CONFIG.SilentAim then silentTarget = nil return end
 	silentTarget = GetSilentTarget()
@@ -126,7 +151,6 @@ local function ApplySilentAim()
 	Camera.CFrame = CFrame.new(camPos, camPos + dir)
 end
 
--- No Recoil: scan ReplicatedStorage + PlayerScripts for gun config tables
 local function PatchGunModule(mod)
 	local ok, result = pcall(require, mod)
 	if not ok or type(result) ~= "table" then return end
@@ -183,7 +207,6 @@ local function ApplyNoRecoil()
 	end)
 end
 
--- Vehicle: AssemblyLinearVelocity pusher while W held, set once on seat
 local wHeld = false
 UserInputService.InputBegan:Connect(function(input, gp)
 	if gp then return end
@@ -232,7 +255,6 @@ local function WatchSeat()
 	end)
 end
 
--- Infinite Nitro: hook on input event, lock on keydown only — no loop
 local function StartInfiniteNitro()
 	if nitroConn then nitroConn:Disconnect() nitroConn = nil end
 	if not CONFIG.InfiniteNitro then return end
@@ -255,16 +277,27 @@ local function StartInfiniteNitro()
 	LockNitro()
 end
 
--- Auto Escape: step-TP
-local function StepTeleport(targetCF)
+-- AUTO ESCAPE: physics-based bypass — bungkus CFrame dalam velocity loop pendek
+-- bukan raw teleport, lebih susah dideteksi anti-cheat Jailbreak
+local function PhysicsEscape(targetCF)
 	local char, root, hum = GetFreshChar()
 	if not root or not hum or hum.Health <= 0 then return end
 	local origin = root.CFrame
-	for i = 1, 12 do
+	local steps  = 18
+	for i = 1, steps do
 		if not CONFIG.AutoEscape then break end
-		root.CFrame = origin:Lerp(targetCF, i / 12)
-		task.wait(0.05)
+		local alpha  = i / steps
+		local nextCF = origin:Lerp(targetCF, alpha)
+		root.CFrame  = nextCF
+		local diff   = (nextCF.Position - root.Position)
+		pcall(function()
+			root.AssemblyLinearVelocity = diff * 20
+		end)
+		task.wait(0.04)
 	end
+	pcall(function()
+		root.AssemblyLinearVelocity = Vector3.zero
+	end)
 end
 
 local function StartAutoEscape()
@@ -282,22 +315,65 @@ local function StartAutoEscape()
 				and pos.Z > -800 and pos.Z < 200
 			if not inPrison then continue end
 			CONFIG.AutoEscape = false
-			StepTeleport(ESCAPE_OUT)
-			task.wait(0.5)
+			PhysicsEscape(ESCAPE_OUT)
+			task.wait(0.6)
 			local _, r2 = GetFreshChar()
-			if r2 then r2.CFrame = CFrame.new(CRIM_BASE) end
+			if r2 then
+				PhysicsEscape(CFrame.new(CRIM_BASE))
+			end
 			break
 		end
 		escapeRunning = false
 	end)
 end
 
--- ESP: Highlight instances
+-- FAST RUN: GetPropertyChangedSignal buat tangkap reset WalkSpeed dari server
+local function ApplyWalkSpeed()
+	local _, _, hum = GetFreshChar()
+	if not hum then return end
+	pcall(function() hum.WalkSpeed = CONFIG.WalkSpeed end)
+end
+
+local function StartFastRun()
+	if walkSpeedConn then walkSpeedConn:Disconnect() walkSpeedConn = nil end
+	if not CONFIG.FastRun then
+		local _, _, hum = GetFreshChar()
+		if hum then pcall(function() hum.WalkSpeed = 16 end) end
+		return
+	end
+	ApplyWalkSpeed()
+	local _, _, hum = GetFreshChar()
+	if hum then
+		walkSpeedConn = hum:GetPropertyChangedSignal("WalkSpeed"):Connect(function()
+			if CONFIG.FastRun then
+				task.defer(ApplyWalkSpeed)
+			end
+		end)
+	end
+end
+
 local function GetESPColor(player)
 	local team = GetTeam(player)
 	if string.find(team, "police") then return Color3.fromRGB(50,100,255), Color3.fromRGB(0,40,180) end
 	if string.find(team, "crim")   then return Color3.fromRGB(255,50,50),  Color3.fromRGB(140,0,0)  end
 	return Color3.fromRGB(200,200,200), Color3.fromRGB(80,80,80)
+end
+
+local function UpdateESPLabel(player)
+	local label = ESP_Labels[player]
+	if not label then return end
+	local pchar = player.Character
+	local proot = pchar and pchar:FindFirstChild("HumanoidRootPart")
+	local _, root = GetFreshChar()
+	if not (proot and root) then label.Visible = false return end
+	local dist = math.floor((root.Position - proot.Position).Magnitude)
+	local screen, onScreen = Camera:WorldToViewportPoint(proot.Position)
+	if not onScreen then label.Visible = false return end
+	local fill, _ = GetESPColor(player)
+	label.Position = Vector2.new(screen.X, screen.Y - 24)
+	label.Text     = player.Name .. "  [" .. dist .. "s]"
+	label.Color    = fill
+	label.Visible  = true
 end
 
 local function CreateHighlight(player)
@@ -314,11 +390,23 @@ local function CreateHighlight(player)
 	hl.Adornee             = pchar
 	hl.Parent              = pchar
 	ESP_Highlights[player] = hl
+
+	if not ESP_Labels[player] then
+		local lbl = Drawing.new("Text")
+		lbl.Size    = 13
+		lbl.Center  = true
+		lbl.Outline = true
+		lbl.OutlineColor = Color3.fromRGB(0,0,0)
+		lbl.Visible = false
+		ESP_Labels[player] = lbl
+	end
 end
 
 local function RemoveHighlight(player)
 	local hl = ESP_Highlights[player]
 	if hl then pcall(function() hl:Destroy() end) ESP_Highlights[player] = nil end
+	local lbl = ESP_Labels[player]
+	if lbl then lbl:Remove() ESP_Labels[player] = nil end
 end
 
 for _, p in ipairs(Players:GetPlayers()) do
@@ -390,7 +478,6 @@ fovCircle.Filled    = false
 fovCircle.Thickness = 1
 fovCircle.Visible   = false
 
--- GUI
 local screenGui = Instance.new("ScreenGui")
 screenGui.Name         = "OntoyJB"
 screenGui.ResetOnSpawn = false
@@ -676,7 +763,6 @@ local function MakeSliderRow(parent, label, dMin, dMax, initPct, unit, onChanged
 	return row
 end
 
--- Bone selector: cycle button
 local function MakeBoneCycleRow(parent)
 	local bones = {"Head", "HumanoidRootPart", "Torso"}
 	local idx   = 1
@@ -714,18 +800,17 @@ local function MakeBoneCycleRow(parent)
 	return row
 end
 
--- Pages
 local escapePage = MakePage(); pages["escape"]  = escapePage
 local escapeBtn  = MakeSidebarBtn("🔓","Escape","escape")
 MakeSectionLabel(escapePage, "AUTO ESCAPE")
 local _, escGet, _ = MakeToggleRow(escapePage, "Auto Escape",
-	"Step-TP keluar penjara ke Crim Base (AC-safe)")
+	"Physics-bypass TP keluar penjara ke Crim Base")
 
 local combatPage = MakePage(); pages["combat"]  = combatPage
 local combatSBtn = MakeSidebarBtn("⚔","Combat","combat")
 MakeSectionLabel(combatPage, "SILENT AIM")
 local _, silentGet, _ = MakeToggleRow(combatPage, "Silent Aim",
-	"Namecall hook — arah peluru & kamera ke target bone")
+	"Namecall + Raycast hook — redirect hit ke target bone")
 MakeBoneCycleRow(combatPage)
 MakeSliderRow(combatPage, "FOV Radius", 30, 400, (CONFIG.SilentAimFOV-30)/370, " px", function(val)
 	CONFIG.SilentAimFOV = val; fovCircle.Radius = val
@@ -750,9 +835,22 @@ local espPage  = MakePage(); pages["esp"]  = espPage
 local espSBtn  = MakeSidebarBtn("👁","ESP","esp")
 MakeSectionLabel(espPage, "WALLHACK")
 local _, espGet, _    = MakeToggleRow(espPage, "ESP Highlight",
-	"Highlight instance — Biru=Police Merah=Crim")
+	"Highlight + distance label [Ns] — Biru=Police Merah=Crim")
 local _, tracerGet, _ = MakeToggleRow(espPage, "Tracers",
 	"Drawing Line — cleanup per frame, no memory leak")
+
+local movePage  = MakePage(); pages["movement"]  = movePage
+local moveSBtn  = MakeSidebarBtn("👟","Movement","movement")
+MakeSectionLabel(movePage, "WALK SPEED")
+local _, fastRunGet, _ = MakeToggleRow(movePage, "Fast Run",
+	"GetPropertyChangedSignal — reset proof, no Heartbeat loop")
+MakeSliderRow(movePage, "Walk Speed", 16, 150,
+	(CONFIG.WalkSpeed - 16) / 134, " stud/s",
+	function(val)
+		CONFIG.WalkSpeed = val
+		if CONFIG.FastRun then ApplyWalkSpeed() end
+	end
+)
 
 local function WireToggle(getter, configKey, onEnable, onDisable)
 	RunService.Heartbeat:Connect(function()
@@ -783,16 +881,20 @@ WireToggle(espGet, "ESP",
 			if p ~= LocalPlayer and p.Character then CreateHighlight(p) end
 		end
 	end,
-	function() for p in pairs(ESP_Highlights) do RemoveHighlight(p) end end
+	function()
+		for p in pairs(ESP_Highlights) do RemoveHighlight(p) end
+	end
 )
 WireToggle(tracerGet, "Tracers", nil, function()
 	for p, line in pairs(ESP_Tracers) do line:Remove() ESP_Tracers[p] = nil end
 end)
+WireToggle(fastRunGet, "FastRun", StartFastRun, StartFastRun)
 
-escapeBtn.MouseButton1Click:Connect(function()  SetActivePage("escape")  end)
-combatSBtn.MouseButton1Click:Connect(function()  SetActivePage("combat")  end)
-vehicleSBtn.MouseButton1Click:Connect(function() SetActivePage("vehicle") end)
-espSBtn.MouseButton1Click:Connect(function()     SetActivePage("esp")     end)
+escapeBtn.MouseButton1Click:Connect(function()   SetActivePage("escape")   end)
+combatSBtn.MouseButton1Click:Connect(function()   SetActivePage("combat")   end)
+vehicleSBtn.MouseButton1Click:Connect(function()  SetActivePage("vehicle")  end)
+espSBtn.MouseButton1Click:Connect(function()      SetActivePage("esp")      end)
+moveSBtn.MouseButton1Click:Connect(function()     SetActivePage("movement") end)
 SetActivePage("combat")
 
 local contentVisible = true
@@ -805,12 +907,15 @@ end)
 closeBtn.MouseButton1Click:Connect(function()
 	CONFIG.AutoEscape = false; CONFIG.SilentAim = false
 	CONFIG.NoRecoil   = false; CONFIG.VehicleMods = false
-	CONFIG.InfiniteNitro = false; CONFIG.ESP = false; CONFIG.Tracers = false
+	CONFIG.InfiniteNitro = false; CONFIG.ESP = false
+	CONFIG.Tracers = false; CONFIG.FastRun = false
 	for p in pairs(ESP_Highlights) do RemoveHighlight(p) end
 	for p, line in pairs(ESP_Tracers) do line:Remove() ESP_Tracers[p] = nil end
-	if noRecoilConn   then noRecoilConn:Disconnect()   end
-	if nitroConn      then nitroConn:Disconnect()      end
+	for p, lbl in pairs(ESP_Labels) do lbl:Remove() ESP_Labels[p] = nil end
+	if noRecoilConn    then noRecoilConn:Disconnect()    end
+	if nitroConn       then nitroConn:Disconnect()       end
 	if vehiclePushConn then vehiclePushConn:Disconnect() end
+	if walkSpeedConn   then walkSpeedConn:Disconnect()   end
 	fovCircle:Remove(); screenGui:Destroy()
 end)
 
@@ -819,19 +924,22 @@ LocalPlayer.CharacterAdded:Connect(function(char)
 	LocalRoot      = char:WaitForChild("HumanoidRootPart")
 	LocalHumanoid  = char:WaitForChild("Humanoid")
 	silentTarget   = nil; lastSeat = nil
+	if walkSpeedConn then walkSpeedConn:Disconnect() walkSpeedConn = nil end
 	task.wait(1)
 	if CONFIG.ESP then
 		for _, p in ipairs(Players:GetPlayers()) do
 			if p ~= LocalPlayer and p.Character then CreateHighlight(p) end
 		end
 	end
-	if CONFIG.AutoEscape then StartAutoEscape() end
+	if CONFIG.AutoEscape  then StartAutoEscape()  end
 	if CONFIG.VehicleMods then StartVehiclePush() end
+	if CONFIG.FastRun     then StartFastRun()     end
 end)
 
 WatchSeat()
 
 local tracerTick = 0
+local espLabelTick = 0
 RunService.RenderStepped:Connect(function()
 	if CONFIG.SilentAim then
 		ApplySilentAim()
@@ -842,11 +950,24 @@ RunService.RenderStepped:Connect(function()
 	else
 		fovCircle.Visible = false
 	end
+
 	local now = tick()
+
 	if CONFIG.Tracers and (now - tracerTick) >= 0.05 then
 		tracerTick = now
 		UpdateTracers()
 	elseif not CONFIG.Tracers then
 		for p, line in pairs(ESP_Tracers) do line:Remove() ESP_Tracers[p] = nil end
+	end
+
+	if CONFIG.ESP and (now - espLabelTick) >= 0.05 then
+		espLabelTick = now
+		for _, player in ipairs(Players:GetPlayers()) do
+			if player ~= LocalPlayer then
+				UpdateESPLabel(player)
+			end
+		end
+	elseif not CONFIG.ESP then
+		for _, lbl in pairs(ESP_Labels) do lbl.Visible = false end
 	end
 end)
