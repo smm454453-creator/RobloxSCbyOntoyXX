@@ -17,7 +17,7 @@ end
 local CONFIG = {
 	SilentAim    = false,
 	TargetBone   = "Head",
-	SilentFOV    = 60,       -- default kecil, slider bisa geser
+	SilentFOV    = 60,
 	FastRun      = false,
 	WalkSpeed    = 50,
 	InfiniteJump = false,
@@ -27,10 +27,6 @@ local CONFIG = {
 }
 
 -- ── LOS CHECK ────────────────────────────────────────────────────────────────
--- Shoot ray kamera → bone.
--- Return true  = jalan ke target clear (tidak ada tembok di tengah)
--- Return false = ada sesuatu yang bukan bagian tubuh target → skip
-
 local function IsVisible(bone, targetChar)
 	local myChar = LP.Character
 	local camPos = Camera.CFrame.Position
@@ -40,22 +36,21 @@ local function IsVisible(bone, targetChar)
 
 	local params = RaycastParams.new()
 	params.FilterType = Enum.RaycastFilterType.Exclude
-	-- exclude karakter lokal SAJA — tembok tetap masuk deteksi
 	params.FilterDescendantsInstances = myChar and {myChar} or {}
 
 	local result = Workspace:Raycast(camPos, dir.Unit * dist, params)
-	if not result then return true end  -- tidak kena apa-apa → clear
-
-	-- kena sesuatu: harus bagian dari karakter target
+	if not result then return true end
 	return result.Instance ~= nil and result.Instance:IsDescendantOf(targetChar)
 end
 
--- ── GET BEST TARGET (satu pass, LOS wajib lolos) ─────────────────────────────
+-- ── GET BEST TARGET ───────────────────────────────────────────────────────────
+-- Hanya cari target dalam FOV radius — TIDAK redirect kamera sama sekali
+-- Kamera sepenuhnya dikendalikan user, namecall hook yang belokkan projectile
 local function GetBestTarget()
-	local vp   = Camera.ViewportSize
-	local cx   = vp.X / 2
-	local cy   = vp.Y / 2
-	local best = nil
+	local vp    = Camera.ViewportSize
+	local cx    = vp.X / 2
+	local cy    = vp.Y / 2
+	local best  = nil
 	local bestD = math.huge
 
 	for _, p in ipairs(Players:GetPlayers()) do
@@ -68,17 +63,17 @@ local function GetBestTarget()
 		local hum = pc:FindFirstChildOfClass("Humanoid")
 		if not bone or not hum or hum.Health <= 0 then continue end
 
-		-- 1. Harus on-screen (sc.Z > 0)
+		-- 1. On-screen
 		local sc, onScreen = Camera:WorldToViewportPoint(bone.Position)
 		if not onScreen or sc.Z <= 0 then continue end
 
-		-- 2. Harus dalam FOV radius (screen-space px)
+		-- 2. Dalam FOV radius (screen-space px dari tengah layar)
 		local dx = sc.X - cx
 		local dy = sc.Y - cy
 		local d  = math.sqrt(dx*dx + dy*dy)
 		if d >= CONFIG.SilentFOV then continue end
 
-		-- 3. LOS check — TIDAK ada fallback kalau blocked
+		-- 3. LOS clear — tembok = skip, tidak ada fallback
 		if not IsVisible(bone, pc) then continue end
 
 		if d < bestD then
@@ -90,7 +85,9 @@ local function GetBestTarget()
 	return best
 end
 
--- ── NAMECALL HOOK ─────────────────────────────────────────────────────────────
+-- ── NAMECALL HOOK — satu-satunya tempat redirect terjadi ─────────────────────
+-- Kamera TIDAK disentuh di sini maupun di tempat lain
+-- Kalau GetBestTarget() nil → semua args lewat normal, tidak ada snap
 local namecallHooked = false
 local function HookNamecall()
 	if namecallHooked then return end
@@ -101,6 +98,8 @@ local function HookNamecall()
 
 		local m    = getnamecallmethod()
 		local bone = GetBestTarget()
+
+		-- Tidak ada target dalam radius → pass through tanpa modifikasi
 		if not bone or not bone.Parent then return old(self, ...) end
 
 		local bPos = bone.Position
@@ -139,15 +138,6 @@ local function HookNamecall()
 	end)
 end
 pcall(HookNamecall)
-
-local function TickSilentAim()
-	if not CONFIG.SilentAim then return end
-	local bone = GetBestTarget()
-	if not bone or not bone.Parent then return end
-	local camP = Camera.CFrame.Position
-	local dir  = (bone.Position - camP).Unit
-	Camera.CFrame = CFrame.new(camP, camP + dir)
-end
 
 -- ── FAST RUN ──────────────────────────────────────────────────────────────────
 local wsConn = nil
@@ -685,11 +675,10 @@ local sbCombat = MakeSideBtn("🎯","Combat",   "combat")
 local sbMove   = MakeSideBtn("🏃","Movement", "movement")
 local sbESP    = MakeSideBtn("👁","ESP",       "esp")
 
-SecLabel(pgCombat, "SILENT AIM")
-local _, saGet, _ = Toggle(pgCombat, "Silent Aim",
-	"FOV kecil + LOS — tembok = no lock", C.Red)
+SecLabel(pgCombat, "SILENT HIT")
+local _, saGet, _ = Toggle(pgCombat, "Silent Hit",
+	"Namecall redirect — kamera bebas, peluru nempel", C.Red)
 BoneCycle(pgCombat)
--- Range slider 5–400 px, default 60
 Slider(pgCombat, "FOV Radius", 5, 400, (CONFIG.SilentFOV-5)/395, " px", function(v)
 	CONFIG.SilentFOV = v; fovCircle.Radius = v
 end)
@@ -725,8 +714,8 @@ local function Wire(getter, key, onOn, onOff)
 end
 
 Wire(saGet, "SilentAim")
-Wire(frGet, "FastRun",       StartFastRun,       StartFastRun)
-Wire(ijGet, "InfiniteJump",  StartInfiniteJump,  StartInfiniteJump)
+Wire(frGet, "FastRun",      StartFastRun,      StartFastRun)
+Wire(ijGet, "InfiniteJump", StartInfiniteJump, StartInfiniteJump)
 Wire(peGet, "PlayerESP")
 Wire(seGet, "SkeletonESP")
 
@@ -761,7 +750,7 @@ end)
 
 local espTick = 0
 RunService.RenderStepped:Connect(function()
-	TickSilentAim()
+	-- TickSilentAim DIHAPUS — kamera tidak disentuh sama sekali
 	local vp = Camera.ViewportSize
 	fovCircle.Position = Vector2.new(vp.X/2, vp.Y/2)
 	fovCircle.Visible  = CONFIG.SilentAim
