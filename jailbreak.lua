@@ -17,7 +17,7 @@ end
 local CONFIG = {
 	SilentAim    = false,
 	TargetBone   = "Head",
-	SilentFOV    = 120,
+	SilentFOV    = 60,       -- default kecil, slider bisa geser
 	FastRun      = false,
 	WalkSpeed    = 50,
 	InfiniteJump = false,
@@ -26,53 +26,37 @@ local CONFIG = {
 	SkeletonESP  = false,
 }
 
--- ── SILENT HIT CORE (Jailbreak-style LOS + body-snap) ────────────────────────
---
---  Syarat target valid (semua harus lolos):
---    1. Dalam FOV radius (screen-space)
---    2. Raycast dari kamera ke bone TIDAK kena tembok — LOS clear
---    3. Titik hit raycast harus mendarat di bagian tubuh target (BasePart
---       yang merupakan descendant karakter musuh), bukan lantai/dinding
---
---  Kalau salah satu gagal → target di-skip, cari yang lain.
---  Kalau semua gagal    → tidak ada target, namecall lewat normal.
+-- ── LOS CHECK ────────────────────────────────────────────────────────────────
+-- Shoot ray kamera → bone.
+-- Return true  = jalan ke target clear (tidak ada tembok di tengah)
+-- Return false = ada sesuatu yang bukan bagian tubuh target → skip
 
-local RAY_PARAMS = RaycastParams.new()
-RAY_PARAMS.FilterType = Enum.RaycastFilterType.Exclude
-
-local function BuildIgnoreList()
-	-- Exclude karakter lokal dari raycast biar tidak kena hitbox sendiri
-	local c = LP.Character
-	return c and {c} or {}
-end
-
-local function HasClearLOS(camPos, targetPart, targetChar)
-	-- Shoot ray dari kamera ke target bone
-	-- Harus kena bagian dari targetChar, bukan geometry lain
-	local dir = (targetPart.Position - camPos)
-	local dist = dir.Magnitude
-	if dist < 0.5 then return true end -- terlalu dekat, anggap clear
-
-	RAY_PARAMS.FilterDescendantsInstances = BuildIgnoreList()
-
-	local result = Workspace:Raycast(camPos, dir.Unit * (dist + 2), RAY_PARAMS)
-	if not result then return true end -- tidak kena apa-apa → clear
-
-	-- Cek apakah yang kena adalah bagian tubuh target
-	local hit = result.Instance
-	if hit and hit:IsDescendantOf(targetChar) then
-		return true -- kena badan target sendiri → clear
-	end
-
-	return false -- kena tembok / objek lain → blocked
-end
-
-local function GetBestTarget()
-	local vp = Camera.ViewportSize
-	local cx, cy = vp.X / 2, vp.Y / 2
+local function IsVisible(bone, targetChar)
+	local myChar = LP.Character
 	local camPos = Camera.CFrame.Position
+	local dir    = bone.Position - camPos
+	local dist   = dir.Magnitude
+	if dist < 0.1 then return true end
 
-	local best, bestD = nil, math.huge
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	-- exclude karakter lokal SAJA — tembok tetap masuk deteksi
+	params.FilterDescendantsInstances = myChar and {myChar} or {}
+
+	local result = Workspace:Raycast(camPos, dir.Unit * dist, params)
+	if not result then return true end  -- tidak kena apa-apa → clear
+
+	-- kena sesuatu: harus bagian dari karakter target
+	return result.Instance ~= nil and result.Instance:IsDescendantOf(targetChar)
+end
+
+-- ── GET BEST TARGET (satu pass, LOS wajib lolos) ─────────────────────────────
+local function GetBestTarget()
+	local vp   = Camera.ViewportSize
+	local cx   = vp.X / 2
+	local cy   = vp.Y / 2
+	local best = nil
+	local bestD = math.huge
 
 	for _, p in ipairs(Players:GetPlayers()) do
 		if p == LP then continue end
@@ -82,20 +66,20 @@ local function GetBestTarget()
 		local bone = pc:FindFirstChild(CONFIG.TargetBone)
 			or pc:FindFirstChild("HumanoidRootPart")
 		local hum = pc:FindFirstChildOfClass("Humanoid")
-		if not (bone and hum and hum.Health > 0) then continue end
+		if not bone or not hum or hum.Health <= 0 then continue end
 
-		-- 1. Harus on-screen
+		-- 1. Harus on-screen (sc.Z > 0)
 		local sc, onScreen = Camera:WorldToViewportPoint(bone.Position)
 		if not onScreen or sc.Z <= 0 then continue end
 
-		-- 2. Harus dalam FOV radius
+		-- 2. Harus dalam FOV radius (screen-space px)
 		local dx = sc.X - cx
 		local dy = sc.Y - cy
-		local d = math.sqrt(dx*dx + dy*dy)
+		local d  = math.sqrt(dx*dx + dy*dy)
 		if d >= CONFIG.SilentFOV then continue end
 
-		-- 3. Harus lolos LOS check (tidak dihalang tembok)
-		if not HasClearLOS(camPos, bone, pc) then continue end
+		-- 3. LOS check — TIDAK ada fallback kalau blocked
+		if not IsVisible(bone, pc) then continue end
 
 		if d < bestD then
 			bestD = d
@@ -117,9 +101,7 @@ local function HookNamecall()
 
 		local m    = getnamecallmethod()
 		local bone = GetBestTarget()
-
-		-- Tidak ada target valid → pass through, tidak redirect
-		if not (bone and bone.Parent) then return old(self, ...) end
+		if not bone or not bone.Parent then return old(self, ...) end
 
 		local bPos = bone.Position
 		local camP = Camera.CFrame.Position
@@ -129,7 +111,6 @@ local function HookNamecall()
 			local args = {...}
 			for i, v in ipairs(args) do
 				if typeof(v) == "Instance" and v:IsA("BasePart") then
-					-- Snap ke bone target — inilah "nempel ke badan"
 					args[i] = bone
 				elseif typeof(v) == "Ray" then
 					args[i] = Ray.new(camP, dir * 1000)
@@ -162,7 +143,7 @@ pcall(HookNamecall)
 local function TickSilentAim()
 	if not CONFIG.SilentAim then return end
 	local bone = GetBestTarget()
-	if not (bone and bone.Parent) then return end
+	if not bone or not bone.Parent then return end
 	local camP = Camera.CFrame.Position
 	local dir  = (bone.Position - camP).Unit
 	Camera.CFrame = CFrame.new(camP, camP + dir)
@@ -322,7 +303,7 @@ local function GetFootPos(char)
 end
 
 local function UpdateESP()
-	local myChar, myRoot = GetChar()
+	local _, myRoot = GetChar()
 
 	for plr, d in pairs(espData) do
 		if not plr or not plr.Parent then RemoveESP(d); espData[plr] = nil end
@@ -706,9 +687,10 @@ local sbESP    = MakeSideBtn("👁","ESP",       "esp")
 
 SecLabel(pgCombat, "SILENT AIM")
 local _, saGet, _ = Toggle(pgCombat, "Silent Aim",
-	"LOS check + FOV — tembok = skip", C.Red)
+	"FOV kecil + LOS — tembok = no lock", C.Red)
 BoneCycle(pgCombat)
-Slider(pgCombat, "FOV Radius", 30, 400, (CONFIG.SilentFOV-30)/370, " px", function(v)
+-- Range slider 5–400 px, default 60
+Slider(pgCombat, "FOV Radius", 5, 400, (CONFIG.SilentFOV-5)/395, " px", function(v)
 	CONFIG.SilentFOV = v; fovCircle.Radius = v
 end)
 
@@ -743,8 +725,8 @@ local function Wire(getter, key, onOn, onOff)
 end
 
 Wire(saGet, "SilentAim")
-Wire(frGet, "FastRun",      StartFastRun, StartFastRun)
-Wire(ijGet, "InfiniteJump", StartInfiniteJump, StartInfiniteJump)
+Wire(frGet, "FastRun",       StartFastRun,       StartFastRun)
+Wire(ijGet, "InfiniteJump",  StartInfiniteJump,  StartInfiniteJump)
 Wire(peGet, "PlayerESP")
 Wire(seGet, "SkeletonESP")
 
