@@ -47,7 +47,9 @@ local dashConn          = nil
 local fastAttackConn    = nil
 local lastAttackTick    = 0
 local farmConn          = nil
+local attackLoopRunning = false   -- flag attack loop terpisah
 local currentFarmTween  = nil
+local currentFarmMob    = nil     -- shared target antara movement loop & attack loop
 
 local RegisterAttack = nil
 local CommF = nil
@@ -97,8 +99,7 @@ local function GetFarmData()
 	local sea = World3 and 3 or (World2 and 2 or 1)
 	return {
 		Sea = sea,
-		MinLvl = level,
-		MaxLvl = level,
+		MinLvl = level, MaxLvl = level,
 		Island = World3 and "Sea 3" or (World2 and "Sea 2" or "Sea 1"),
 		MobFolder = "Enemies",
 		MobName = Mon,
@@ -134,22 +135,13 @@ local function SetPlatformStand(state)
 end
 
 local function FlyTo(targetCFrame, onDone)
-	if currentFarmTween then
-		currentFarmTween:Cancel()
-		currentFarmTween = nil
-	end
-
+	if currentFarmTween then currentFarmTween:Cancel() currentFarmTween = nil end
 	local char = LocalPlayer.Character
 	local root = char and char:FindFirstChild("HumanoidRootPart")
-	if not root then
-		if onDone then onDone() end
-		return
-	end
-
+	if not root then if onDone then onDone() end return end
 	local destPos  = targetCFrame.Position
 	local safeY    = math.max(destPos.Y, MIN_FLY_Y)
 	local safeDest = CFrame.new(Vector3.new(destPos.X, safeY, destPos.Z))
-
 	if root.Position.Y < MIN_FLY_Y then
 		root.CFrame = CFrame.new(root.Position.X, MIN_FLY_Y, root.Position.Z)
 		task.wait(0.05)
@@ -157,15 +149,11 @@ local function FlyTo(targetCFrame, onDone)
 		root = char and char:FindFirstChild("HumanoidRootPart")
 		if not root then if onDone then onDone() end return end
 	end
-
 	SetPlatformStand(true)
-
 	local dist  = (safeDest.Position - root.Position).Magnitude
 	local dur   = math.clamp(dist / CONFIG.FarmFlySpeed, 0.3, 12)
-	local info  = TweenInfo.new(dur, Enum.EasingStyle.Linear)
-	local tween = TweenService:Create(root, info, {CFrame = safeDest})
+	local tween = TweenService:Create(root, TweenInfo.new(dur, Enum.EasingStyle.Linear), {CFrame = safeDest})
 	currentFarmTween = tween
-
 	local fired = false
 	tween.Completed:Connect(function(tweenStatus)
 		if fired then return end
@@ -174,7 +162,6 @@ local function FlyTo(targetCFrame, onDone)
 		if tweenStatus ~= Enum.TweenStatus.Completed then return end
 		if onDone then onDone() end
 	end)
-
 	tween:Play()
 	return tween
 end
@@ -184,8 +171,8 @@ local function HasActiveQuest()
 	if not gui then return false end
 	local main = gui:FindFirstChild("Main")
 	if not main then return false end
-	local questFrame = main:FindFirstChild("Quest")
-	return questFrame and questFrame.Visible
+	local q = main:FindFirstChild("Quest")
+	return q and q.Visible
 end
 
 local function FindNearestMob(mobName, mobFolder)
@@ -194,84 +181,110 @@ local function FindNearestMob(mobName, mobFolder)
 	local folder = Workspace:FindFirstChild(mobFolder or "Enemies")
 	if not folder then return nil end
 	local best, bestDist = nil, math.huge
-	local lowerTarget = string.lower(mobName)
+	local lower = string.lower(mobName)
 	for _, mob in ipairs(folder:GetChildren()) do
-		if string.find(string.lower(mob.Name), lowerTarget, 1, true) then
+		if string.find(string.lower(mob.Name), lower, 1, true) then
 			local hum = mob:FindFirstChild("Humanoid")
 			local mr  = mob:FindFirstChild("HumanoidRootPart")
 			if hum and mr and hum.Health > 0 then
-				local dist = (mr.Position - root.Position).Magnitude
-				if dist < bestDist then bestDist = dist best = mob end
+				local d = (mr.Position - root.Position).Magnitude
+				if d < bestDist then bestDist = d best = mob end
 			end
 		end
 	end
 	return best
 end
 
-local lastFarmAttack = 0
+-- ── ATTACK LOOP (task.spawn terpisah dari movement loop) ─────────────────────
+-- Xeno safe: hanya tool:Activate() + VirtualUser:ClickButton1 + RegisterAttack:FireServer
+-- Tidak ada VirtualInputManager, tidak ada getgc
 
-local function ExecuteAttack(mob)
-	local char = LocalPlayer.Character
-	if not char or not mob then return end
+local function StartAttackLoop()
+	if attackLoopRunning then return end
+	attackLoopRunning = true
+	task.spawn(function()
+		while attackLoopRunning do
+			task.wait(0.1)
+			if not CONFIG.Mode9 then continue end
 
-	local hum  = char:FindFirstChildOfClass("Humanoid")
-	local root = char:FindFirstChild("HumanoidRootPart")
-	local mr   = mob:FindFirstChild("HumanoidRootPart")
-	local mh   = mob:FindFirstChildOfClass("Humanoid")
-	if not hum or not root or not mr or not mh or mh.Health <= 0 then return end
+			local mob = currentFarmMob
+			if not mob then continue end
 
-	local now = os.clock()
-	if now - lastFarmAttack < 0.1 then return end
-	lastFarmAttack = now
+			local mh = mob:FindFirstChildOfClass("Humanoid")
+			local mr = mob:FindFirstChild("HumanoidRootPart")
+			if not mh or not mr or mh.Health <= 0 then continue end
 
-	local tool = char:FindFirstChildOfClass("Tool")
-	if not tool then
-		local backpackTool = LocalPlayer.Backpack:FindFirstChildOfClass("Tool")
-		if backpackTool then
-			pcall(function() hum:EquipTool(backpackTool) end)
-			task.wait(0.05)
-			tool = char:FindFirstChildOfClass("Tool")
+			local char = LocalPlayer.Character
+			if not char then continue end
+
+			local hum = char:FindFirstChildOfClass("Humanoid")
+			if not hum or hum.Health <= 0 then continue end
+
+			-- equip tool kalau belum
+			local tool = char:FindFirstChildOfClass("Tool")
+			if not tool then
+				local bt = LocalPlayer.Backpack:FindFirstChildOfClass("Tool")
+				if bt then
+					pcall(function() hum:EquipTool(bt) end)
+					task.wait(0.05)
+					tool = char:FindFirstChildOfClass("Tool")
+				end
+			end
+
+			if not tool then
+				farmStatus = "No tool equipped"
+				continue
+			end
+
+			-- activate tool (Xeno safe)
+			pcall(function() tool:Activate() end)
+
+			-- VirtualUser click (Xeno safe, tidak pakai VirtualInputManager)
+			pcall(function()
+				VirtualUser:CaptureController()
+				VirtualUser:ClickButton1(Vector2.new(50, 50), Camera.CFrame)
+			end)
+
+			-- RegisterAttack:FireServer langsung ke root mob
+			if RegisterAttack then
+				pcall(function() RegisterAttack:FireServer(mr) end)
+			end
+
+			farmStatus = "Nyerang " .. tostring(mob.Name)
 		end
-	end
-
-	if not tool then
-		farmStatus = "No tool equipped"
-		return
-	end
-
-	pcall(function() tool:Activate() end)
-
-	pcall(function()
-		VirtualUser:CaptureController()
-		VirtualUser:ClickButton1(Vector2.new(0, 0), Camera.CFrame)
 	end)
-
-	if RegisterAttack then
-		pcall(function() RegisterAttack:FireServer(mr) end)
-	end
-
-	farmStatus = "Nyerang " .. tostring(mob.Name)
 end
 
+local function StopAttackLoop()
+	attackLoopRunning = false
+	currentFarmMob    = nil
+end
+
+-- ── FARM STATE MACHINE ────────────────────────────────────────────────────────
+
 local FARM_STATE = {
-	IDLE       = "idle",
-	GO_QUEST   = "go_quest",
-	TAKE_QUEST = "take_quest",
-	GO_MOB     = "go_mob",
-	ATTACK     = "attack",
-	WAIT_SPAWN = "wait_spawn",
+	IDLE="idle", GO_QUEST="go_quest", TAKE_QUEST="take_quest",
+	GO_MOB="go_mob", ATTACK="attack", WAIT_SPAWN="wait_spawn",
 }
 
 local farmState      = FARM_STATE.IDLE
 local waitingFly     = false
 local waitSpawnTimer = 0
+local lastQuestCall  = 0
+local questStuckTimer = 0
+local QUEST_COOLDOWN  = 1.5
+local QUEST_TIMEOUT   = 3.0
 
 local function StartFarm()
 	if farmConn then farmConn:Disconnect() farmConn = nil end
-	farmState      = FARM_STATE.GO_QUEST
-	waitingFly     = false
-	waitSpawnTimer = 0
-	farmStatus     = "Starting..."
+	farmState       = FARM_STATE.GO_QUEST
+	waitingFly      = false
+	waitSpawnTimer  = 0
+	lastQuestCall   = 0
+	questStuckTimer = 0
+	currentFarmMob  = nil
+	farmStatus      = "Starting..."
+	StartAttackLoop()
 
 	farmConn = RunService.Heartbeat:Connect(function(dt)
 		if not CONFIG.Mode9 then return end
@@ -287,14 +300,18 @@ local function StartFarm()
 			return
 		end
 
+		-- ── GO_QUEST ──────────────────────────────────────────────────────────
 		if farmState == FARM_STATE.GO_QUEST then
+			currentFarmMob  = nil
+			questStuckTimer = 0
 			if HasActiveQuest() then
 				farmState  = FARM_STATE.GO_MOB
 				farmStatus = "Quest aktif — hunting"
 				return
 			end
-			local dist = (farmData.NPCCFrame.Position - root.Position).Magnitude
-			if dist > 20 then
+			local npcPos = farmData.NPCCFrame.Position
+			local xzDist = Vector2.new(npcPos.X - root.Position.X, npcPos.Z - root.Position.Z).Magnitude
+			if xzDist > 20 then
 				farmStatus = "Terbang ke NPC quest..."
 				waitingFly = true
 				FlyTo(farmData.NPCCFrame, function()
@@ -305,31 +322,56 @@ local function StartFarm()
 				farmState = FARM_STATE.TAKE_QUEST
 			end
 
+		-- ── TAKE_QUEST ────────────────────────────────────────────────────────
 		elseif farmState == FARM_STATE.TAKE_QUEST then
+			questStuckTimer = questStuckTimer + dt
+			currentFarmMob  = nil
+
 			if HasActiveQuest() then
-				farmState  = FARM_STATE.GO_MOB
-				farmStatus = "Quest diterima!"
+				farmState       = FARM_STATE.GO_MOB
+				questStuckTimer = 0
+				farmStatus      = "Quest diterima!"
 				return
 			end
-			local npcDist = (farmData.NPCCFrame.Position - root.Position).Magnitude
-			if npcDist > 30 then
-				farmState = FARM_STATE.GO_QUEST
+
+			-- timeout bypass
+			if questStuckTimer >= QUEST_TIMEOUT then
+				farmState       = FARM_STATE.GO_MOB
+				questStuckTimer = 0
+				farmStatus      = "Quest timeout — force GO_MOB"
 				return
 			end
+
+			local npcPos = farmData.NPCCFrame.Position
+			local xzDist = Vector2.new(npcPos.X - root.Position.X, npcPos.Z - root.Position.Z).Magnitude
+			if xzDist > 30 then
+				farmState       = FARM_STATE.GO_QUEST
+				questStuckTimer = 0
+				return
+			end
+
+			-- anchor hover di NPC biar gak jatuh tembus map (noclip protection)
+			local hoverY = math.max(npcPos.Y + 10, MIN_FLY_Y)
+			SetPlatformStand(true)
+			root.CFrame = CFrame.new(Vector3.new(npcPos.X, hoverY, npcPos.Z))
+			root.AssemblyLinearVelocity = Vector3.zero
+
+			-- debounce StartQuest call
+			local now = tick()
+			if now - lastQuestCall < QUEST_COOLDOWN then return end
+			lastQuestCall = now
+
 			farmStatus = "Ambil quest: " .. farmData.QuestName
 			if CommF then
 				pcall(function()
 					CommF:InvokeServer("StartQuest", farmData.QuestName, farmData.QuestNum)
 				end)
 			end
-			task.wait(0.8)
-			if HasActiveQuest() then
-				farmState = FARM_STATE.GO_MOB
-			else
-				farmStatus = "Quest gagal, retry..."
-			end
 
+		-- ── GO_MOB ────────────────────────────────────────────────────────────
 		elseif farmState == FARM_STATE.GO_MOB then
+			currentFarmMob  = nil
+			questStuckTimer = 0
 			if not HasActiveQuest() then
 				farmState  = FARM_STATE.GO_QUEST
 				farmStatus = "Quest selesai — ambil baru"
@@ -344,13 +386,10 @@ local function StartFarm()
 			end
 			local mr = mob:FindFirstChild("HumanoidRootPart")
 			if not mr then farmStatus = "Mob no root" return end
-
 			local mobPos  = mr.Position
 			local hoverY  = math.max(mobPos.Y + CONFIG.FarmHoverHeight, MIN_FLY_Y)
 			local hoverCF = CFrame.new(Vector3.new(mobPos.X, hoverY, mobPos.Z))
-			local dist    = (hoverCF.Position - root.Position).Magnitude
-
-			if dist > 8 then
+			if (hoverCF.Position - root.Position).Magnitude > 8 then
 				farmStatus = "Terbang ke " .. farmData.MobName .. "..."
 				waitingFly = true
 				FlyTo(hoverCF, function()
@@ -361,33 +400,48 @@ local function StartFarm()
 				farmState = FARM_STATE.ATTACK
 			end
 
+		-- ── ATTACK (movement only — serangan dihandle attack loop terpisah) ───
 		elseif farmState == FARM_STATE.ATTACK then
 			if not HasActiveQuest() then
-				farmState  = FARM_STATE.GO_QUEST
-				farmStatus = "Quest selesai — ambil baru"
+				currentFarmMob = nil
+				farmState      = FARM_STATE.GO_QUEST
+				farmStatus     = "Quest selesai — ambil baru"
 				return
 			end
 			local mob = FindNearestMob(farmData.MobName, farmData.MobFolder)
 			if not mob or not mob:FindFirstChild("HumanoidRootPart") then
+				currentFarmMob = nil
 				farmState      = FARM_STATE.WAIT_SPAWN
 				waitSpawnTimer = 0
 				farmStatus     = "Mob mati — nunggu respawn"
 				return
 			end
-			local mr     = mob.HumanoidRootPart
-			local mobPos = mr.Position
-			local hoverY = math.max(mobPos.Y + CONFIG.FarmHoverHeight, MIN_FLY_Y)
-			SetPlatformStand(true)
-			root.CFrame = CFrame.new(Vector3.new(mobPos.X, hoverY, mobPos.Z))
-			root.AssemblyLinearVelocity = Vector3.zero
-			ExecuteAttack(mob)
 
+			local mr     = mob:FindFirstChild("HumanoidRootPart")
+			local mobPos = mr.Position
+
+			-- dynamic jitter offset: anti-deteksi cheat statis dari server
+			local jitterX = math.random(-10, 10) / 10
+			local jitterZ = math.random(-10, 10) / 10
+			local hoverY  = math.max(mobPos.Y + CONFIG.FarmHoverHeight, MIN_FLY_Y)
+
+			SetPlatformStand(true)
+			root.CFrame = CFrame.new(
+				Vector3.new(mobPos.X + jitterX, hoverY, mobPos.Z + jitterZ)
+			)
+			root.AssemblyLinearVelocity = Vector3.zero
+
+			-- update shared target untuk attack loop
+			currentFarmMob = mob
+			farmStatus     = "Nyerang " .. tostring(mob.Name)
+
+		-- ── WAIT_SPAWN ────────────────────────────────────────────────────────
 		elseif farmState == FARM_STATE.WAIT_SPAWN then
+			currentFarmMob = nil
 			waitSpawnTimer = waitSpawnTimer + dt
 			if waitSpawnTimer < 1.5 then return end
 			waitSpawnTimer = 0
-			local mob = FindNearestMob(farmData.MobName, farmData.MobFolder)
-			if mob then
+			if FindNearestMob(farmData.MobName, farmData.MobFolder) then
 				farmState  = FARM_STATE.GO_MOB
 				farmStatus = "Mob ketemu!"
 			end
@@ -398,6 +452,7 @@ end
 local function StopFarm()
 	if farmConn then farmConn:Disconnect() farmConn = nil end
 	if currentFarmTween then currentFarmTween:Cancel() currentFarmTween = nil end
+	StopAttackLoop()
 	local char = LocalPlayer.Character
 	local root = char and char:FindFirstChild("HumanoidRootPart")
 	if root then root.AssemblyLinearVelocity = Vector3.zero end
@@ -412,9 +467,8 @@ end
 local silentTarget = nil
 
 local function GetSilentTarget()
-	local vp  = Camera.ViewportSize
-	local cx  = vp.X / 2
-	local cy  = vp.Y / 2
+	local vp = Camera.ViewportSize
+	local cx, cy = vp.X/2, vp.Y/2
 	local fov = CONFIG.SilentAimFOV
 	local best, bestDist = nil, math.huge
 	for _, player in ipairs(Players:GetPlayers()) do
@@ -426,10 +480,8 @@ local function GetSilentTarget()
 		if not (root and hum and hum.Health > 0) then continue end
 		local screen, onScreen = Camera:WorldToScreenPoint(root.Position)
 		if not onScreen then continue end
-		local dx   = screen.X - cx
-		local dy   = screen.Y - cy
-		local dist = math.sqrt(dx*dx + dy*dy)
-		if dist < fov and dist < bestDist then bestDist = dist best = root end
+		local dist = math.sqrt((screen.X-cx)^2 + (screen.Y-cy)^2)
+		if dist < fov and dist < bestDist then bestDist=dist best=root end
 	end
 	return best
 end
@@ -437,17 +489,12 @@ end
 local function ApplySilentAim()
 	if not CONFIG.Mode7 then silentTarget = nil return end
 	silentTarget = GetSilentTarget()
-	if not silentTarget then return end
-	if not silentTarget.Parent then silentTarget = nil return end
-	local targetPos = silentTarget.Position
-	local camPos    = Camera.CFrame.Position
-	local direction = (targetPos - camPos).Unit
-	Camera.CFrame   = CFrame.new(camPos, camPos + direction)
+	if not silentTarget or not silentTarget.Parent then silentTarget = nil return end
+	local dir = (silentTarget.Position - Camera.CFrame.Position).Unit
+	Camera.CFrame = CFrame.new(Camera.CFrame.Position, Camera.CFrame.Position + dir)
 end
 
-local function GetAttackInterval()
-	return 1 / math.max(CONFIG.AttackHPS, 1)
-end
+local function GetAttackInterval() return 1 / math.max(CONFIG.AttackHPS, 1) end
 
 local function GetFastTarget()
 	if silentTarget and silentTarget.Parent then return silentTarget end
@@ -461,8 +508,8 @@ local function GetFastTarget()
 		if not (root and hum and hum.Health > 0) then continue end
 		local _, onScreen = Camera:WorldToScreenPoint(root.Position)
 		if not onScreen then continue end
-		local dist = (root.Position - LocalRoot.Position).Magnitude
-		if dist < bestDist then bestDist = dist best = root end
+		local d = (root.Position - LocalRoot.Position).Magnitude
+		if d < bestDist then bestDist=d best=root end
 	end
 	return best
 end
@@ -470,8 +517,7 @@ end
 local function StartFastAttack()
 	if fastAttackConn then fastAttackConn:Disconnect() fastAttackConn = nil end
 	fastAttackConn = RunService.Heartbeat:Connect(function()
-		if not CONFIG.Mode8 then return end
-		if not RegisterAttack then return end
+		if not CONFIG.Mode8 or not RegisterAttack then return end
 		local now = tick()
 		if now - lastAttackTick < GetAttackInterval() then return end
 		lastAttackTick = now
@@ -508,11 +554,9 @@ end
 
 local function Mode2Func(pos)
 	local p = Instance.new("Part")
-	p.Name = "Ontoy_Part"
-	p.Size = Vector3.new(CONFIG.Radius * 2, 10, CONFIG.Radius * 2)
-	p.Position = pos; p.Anchored = true
-	p.CanCollide = false; p.Transparency = 1
-	p.Parent = Workspace
+	p.Name="Ontoy_Part"; p.Size=Vector3.new(CONFIG.Radius*2,10,CONFIG.Radius*2)
+	p.Position=pos; p.Anchored=true; p.CanCollide=false; p.Transparency=1
+	p.Parent=Workspace
 	game:GetService("Debris"):AddItem(p, 0.1)
 end
 
@@ -532,10 +576,7 @@ local function StartDashLoop()
 	dashConn = RunService.Heartbeat:Connect(function()
 		if not CONFIG.Mode6 or not dashHolding then return end
 		local now = tick()
-		if now - lastDashTime >= DASH_INTERVAL then
-			lastDashTime = now
-			SimulateDash()
-		end
+		if now - lastDashTime >= DASH_INTERVAL then lastDashTime=now SimulateDash() end
 	end)
 end
 
@@ -553,38 +594,26 @@ UserInputService.InputEnded:Connect(function(input)
 end)
 
 local function CreateESP(player)
-	local esp = {
-		Box       = Drawing.new("Square"),
-		Line      = Drawing.new("Line"),
-		NameTag   = Drawing.new("Text"),
-		HealthBar = Drawing.new("Square"),
-	}
-	esp.Box.Thickness = 1; esp.Box.Color = Color3.fromRGB(255,50,50)
-	esp.Box.Filled = false; esp.Box.Visible = false
-	esp.Line.Thickness = 1; esp.Line.Color = Color3.fromRGB(0,255,255); esp.Line.Visible = false
-	esp.NameTag.Size = 13; esp.NameTag.Color = Color3.fromRGB(255,255,255)
-	esp.NameTag.Center = true; esp.NameTag.Outline = true
-	esp.NameTag.OutlineColor = Color3.fromRGB(0,0,0); esp.NameTag.Visible = false
-	esp.HealthBar.Thickness = 1; esp.HealthBar.Filled = true; esp.HealthBar.Visible = false
+	local esp = {Box=Drawing.new("Square"),Line=Drawing.new("Line"),NameTag=Drawing.new("Text"),HealthBar=Drawing.new("Square")}
+	esp.Box.Thickness=1; esp.Box.Color=Color3.fromRGB(255,50,50); esp.Box.Filled=false; esp.Box.Visible=false
+	esp.Line.Thickness=1; esp.Line.Color=Color3.fromRGB(0,255,255); esp.Line.Visible=false
+	esp.NameTag.Size=13; esp.NameTag.Color=Color3.fromRGB(255,255,255)
+	esp.NameTag.Center=true; esp.NameTag.Outline=true; esp.NameTag.OutlineColor=Color3.fromRGB(0,0,0); esp.NameTag.Visible=false
+	esp.HealthBar.Thickness=1; esp.HealthBar.Filled=true; esp.HealthBar.Visible=false
 	return esp
 end
 
 local function CleanupESP(p)
 	local esp = ESP_Objects[p]
-	if esp then
-		esp.Box:Remove(); esp.Line:Remove()
-		esp.NameTag:Remove(); esp.HealthBar:Remove()
-		ESP_Objects[p] = nil
-	end
+	if esp then esp.Box:Remove() esp.Line:Remove() esp.NameTag:Remove() esp.HealthBar:Remove() ESP_Objects[p]=nil end
 end
 
 local function HideESP(esp)
-	esp.Box.Visible = false; esp.NameTag.Visible = false
-	esp.Line.Visible = false; esp.HealthBar.Visible = false
+	esp.Box.Visible=false esp.NameTag.Visible=false esp.Line.Visible=false esp.HealthBar.Visible=false
 end
 
 local function HideAllESP()
-	for _, esp in pairs(ESP_Objects) do HideESP(esp) end
+	for _,esp in pairs(ESP_Objects) do HideESP(esp) end
 end
 
 for _, p in ipairs(Players:GetPlayers()) do
@@ -596,11 +625,8 @@ Players.PlayerRemoving:Connect(function(p) CleanupESP(p) end)
 local fovCircle = nil
 pcall(function()
 	fovCircle = Drawing.new("Circle")
-	fovCircle.Radius    = CONFIG.SilentAimFOV
-	fovCircle.Color     = Color3.fromRGB(255, 60, 80)
-	fovCircle.Filled    = false
-	fovCircle.Thickness = 1
-	fovCircle.Visible   = false
+	fovCircle.Radius=CONFIG.SilentAimFOV; fovCircle.Color=Color3.fromRGB(255,60,80)
+	fovCircle.Filled=false; fovCircle.Thickness=1; fovCircle.Visible=false
 end)
 
 local function RenderESP()
@@ -615,478 +641,417 @@ local function RenderESP()
 		local rs, onScreen = Camera:WorldToScreenPoint(root.Position)
 		local hs           = Camera:WorldToScreenPoint(head.Position)
 		if not onScreen then HideESP(esp) continue end
-		local height = math.max(math.abs(rs.Y - hs.Y) * 2, 10)
+		local height = math.max(math.abs(rs.Y-hs.Y)*2, 10)
 		local width  = height * 0.5
-		local boxPos = Vector2.new(rs.X - width/2, rs.Y - height/2)
-		esp.Box.Size = Vector2.new(width, height); esp.Box.Position = boxPos; esp.Box.Visible = true
-		local hpR  = hum.Health / hum.MaxHealth
-		local barH = height * hpR
-		esp.HealthBar.Size     = Vector2.new(4, barH)
-		esp.HealthBar.Position = Vector2.new(boxPos.X - 7, boxPos.Y + (height - barH))
-		esp.HealthBar.Color    = Color3.fromRGB(math.floor(255*(1-hpR)), math.floor(255*hpR), 0)
-		esp.HealthBar.Visible  = true
-		local dist = math.floor((root.Position - LocalRoot.Position).Magnitude)
-		esp.NameTag.Text     = player.Name.." ["..math.floor(hum.Health).."hp | "..dist.."m]"
-		esp.NameTag.Position = Vector2.new(rs.X, boxPos.Y - 16)
-		esp.NameTag.Visible  = true
+		local boxPos = Vector2.new(rs.X-width/2, rs.Y-height/2)
+		esp.Box.Size=Vector2.new(width,height); esp.Box.Position=boxPos; esp.Box.Visible=true
+		local hpR = hum.Health/hum.MaxHealth
+		local barH = height*hpR
+		esp.HealthBar.Size=Vector2.new(4,barH)
+		esp.HealthBar.Position=Vector2.new(boxPos.X-7, boxPos.Y+(height-barH))
+		esp.HealthBar.Color=Color3.fromRGB(math.floor(255*(1-hpR)), math.floor(255*hpR), 0)
+		esp.HealthBar.Visible=true
+		local dist = math.floor((root.Position-LocalRoot.Position).Magnitude)
+		esp.NameTag.Text=player.Name.." ["..math.floor(hum.Health).."hp | "..dist.."m]"
+		esp.NameTag.Position=Vector2.new(rs.X, boxPos.Y-16); esp.NameTag.Visible=true
 		if CONFIG.Mode4 then
-			local sc = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y)
-			esp.Line.From = sc; esp.Line.To = Vector2.new(rs.X, rs.Y); esp.Line.Visible = true
+			local sc=Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y)
+			esp.Line.From=sc; esp.Line.To=Vector2.new(rs.X,rs.Y); esp.Line.Visible=true
 		else
-			esp.Line.Visible = false
+			esp.Line.Visible=false
 		end
 	end
 end
 
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "Ontoy_Hub"; screenGui.ResetOnSpawn = false
-screenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+screenGui.Name="Ontoy_Hub"; screenGui.ResetOnSpawn=false
+screenGui.Parent=LocalPlayer:WaitForChild("PlayerGui")
 
 local REDZ = {
-	BG         = Color3.fromRGB(14, 12, 16),
-	BG2        = Color3.fromRGB(20, 16, 22),
-	Accent     = Color3.fromRGB(200, 30, 50),
-	AccentDim  = Color3.fromRGB(120, 20, 35),
-	AccentGlow = Color3.fromRGB(255, 60, 80),
-	TextMain   = Color3.fromRGB(240, 220, 225),
-	TextSub    = Color3.fromRGB(130, 100, 110),
-	Stroke     = Color3.fromRGB(60, 30, 40),
-	ToggleOff  = Color3.fromRGB(40, 32, 36),
-	SliderFill = Color3.fromRGB(200, 30, 50),
-	SliderBG   = Color3.fromRGB(35, 28, 32),
-	Green      = Color3.fromRGB(30, 180, 80),
-	GreenDim   = Color3.fromRGB(20, 100, 50),
+	BG=Color3.fromRGB(14,12,16), BG2=Color3.fromRGB(20,16,22),
+	Accent=Color3.fromRGB(200,30,50), AccentDim=Color3.fromRGB(120,20,35),
+	AccentGlow=Color3.fromRGB(255,60,80), TextMain=Color3.fromRGB(240,220,225),
+	TextSub=Color3.fromRGB(130,100,110), Stroke=Color3.fromRGB(60,30,40),
+	ToggleOff=Color3.fromRGB(40,32,36), SliderFill=Color3.fromRGB(200,30,50),
+	SliderBG=Color3.fromRGB(35,28,32), Green=Color3.fromRGB(30,180,80),
+	GreenDim=Color3.fromRGB(20,100,50),
 }
 
-local mainWindow = Instance.new("Frame")
-mainWindow.Size             = UDim2.new(0, 580, 0, 400)
-mainWindow.Position         = UDim2.new(0.5, -290, 0.5, -200)
-mainWindow.BackgroundColor3 = REDZ.BG
-mainWindow.BorderSizePixel  = 0
-mainWindow.Active           = true
-mainWindow.Draggable        = false
-mainWindow.Parent           = screenGui
-Instance.new("UICorner", mainWindow).CornerRadius = UDim.new(0, 10)
-local mainStroke = Instance.new("UIStroke", mainWindow)
-mainStroke.Color = REDZ.Stroke; mainStroke.Thickness = 1.5
+local mainWindow=Instance.new("Frame")
+mainWindow.Size=UDim2.new(0,580,0,400); mainWindow.Position=UDim2.new(0.5,-290,0.5,-200)
+mainWindow.BackgroundColor3=REDZ.BG; mainWindow.BorderSizePixel=0
+mainWindow.Active=true; mainWindow.Draggable=false; mainWindow.Parent=screenGui
+Instance.new("UICorner",mainWindow).CornerRadius=UDim.new(0,10)
+local mainStroke=Instance.new("UIStroke",mainWindow); mainStroke.Color=REDZ.Stroke; mainStroke.Thickness=1.5
 
-local titleBar = Instance.new("Frame", mainWindow)
-titleBar.Size             = UDim2.new(1, 0, 0, 42)
-titleBar.BackgroundColor3 = REDZ.BG2
-titleBar.BorderSizePixel  = 0
-titleBar.Active           = true
-Instance.new("UICorner", titleBar).CornerRadius = UDim.new(0, 10)
+local titleBar=Instance.new("Frame",mainWindow)
+titleBar.Size=UDim2.new(1,0,0,42); titleBar.BackgroundColor3=REDZ.BG2
+titleBar.BorderSizePixel=0; titleBar.Active=true
+Instance.new("UICorner",titleBar).CornerRadius=UDim.new(0,10)
 
-local draggingWindow = false
-local dragStartMouse = Vector2.zero
-local dragStartPos   = UDim2.new()
-
+local draggingWindow=false; local dragStartMouse=Vector2.zero; local dragStartPos=UDim2.new()
 titleBar.InputBegan:Connect(function(input)
-	if input.UserInputType == Enum.UserInputType.MouseButton1 then
-		draggingWindow = true
-		dragStartMouse = Vector2.new(input.Position.X, input.Position.Y)
-		dragStartPos   = mainWindow.Position
+	if input.UserInputType==Enum.UserInputType.MouseButton1 then
+		draggingWindow=true; dragStartMouse=Vector2.new(input.Position.X,input.Position.Y); dragStartPos=mainWindow.Position
 	end
 end)
 UserInputService.InputChanged:Connect(function(input)
-	if draggingWindow and input.UserInputType == Enum.UserInputType.MouseMovement then
-		local d = Vector2.new(input.Position.X, input.Position.Y) - dragStartMouse
-		mainWindow.Position = UDim2.new(
-			dragStartPos.X.Scale, dragStartPos.X.Offset + d.X,
-			dragStartPos.Y.Scale, dragStartPos.Y.Offset + d.Y
-		)
+	if draggingWindow and input.UserInputType==Enum.UserInputType.MouseMovement then
+		local d=Vector2.new(input.Position.X,input.Position.Y)-dragStartMouse
+		mainWindow.Position=UDim2.new(dragStartPos.X.Scale,dragStartPos.X.Offset+d.X,dragStartPos.Y.Scale,dragStartPos.Y.Offset+d.Y)
 	end
 end)
 UserInputService.InputEnded:Connect(function(input)
-	if input.UserInputType == Enum.UserInputType.MouseButton1 then draggingWindow = false end
+	if input.UserInputType==Enum.UserInputType.MouseButton1 then draggingWindow=false end
 end)
 
-local titleAccentLine = Instance.new("Frame", titleBar)
-titleAccentLine.Size             = UDim2.new(1, 0, 0, 2)
-titleAccentLine.Position         = UDim2.new(0, 0, 1, -2)
-titleAccentLine.BackgroundColor3 = REDZ.Accent
-titleAccentLine.BorderSizePixel  = 0
+local titleAccentLine=Instance.new("Frame",titleBar)
+titleAccentLine.Size=UDim2.new(1,0,0,2); titleAccentLine.Position=UDim2.new(0,0,1,-2)
+titleAccentLine.BackgroundColor3=REDZ.Accent; titleAccentLine.BorderSizePixel=0
 
-local logoDot = Instance.new("Frame", titleBar)
-logoDot.Size             = UDim2.new(0, 8, 0, 8)
-logoDot.Position         = UDim2.new(0, 14, 0.5, -4)
-logoDot.BackgroundColor3 = REDZ.AccentGlow
-logoDot.BorderSizePixel  = 0
-Instance.new("UICorner", logoDot).CornerRadius = UDim.new(0, 4)
+local logoDot=Instance.new("Frame",titleBar)
+logoDot.Size=UDim2.new(0,8,0,8); logoDot.Position=UDim2.new(0,14,0.5,-4)
+logoDot.BackgroundColor3=REDZ.AccentGlow; logoDot.BorderSizePixel=0
+Instance.new("UICorner",logoDot).CornerRadius=UDim.new(0,4)
 
-local titleText = Instance.new("TextLabel", titleBar)
-titleText.Size                   = UDim2.new(1, -160, 1, 0)
-titleText.Position               = UDim2.new(0, 30, 0, 0)
-titleText.BackgroundTransparency = 1
-titleText.Text                   = "ONTOY HUB  <font color='#C81E32'>·</font>  Blox Fruits"
-titleText.RichText                = true
-titleText.TextColor3             = REDZ.TextMain
-titleText.Font                   = Enum.Font.GothamBold
-titleText.TextSize               = 13
-titleText.TextXAlignment         = Enum.TextXAlignment.Left
+local titleText=Instance.new("TextLabel",titleBar)
+titleText.Size=UDim2.new(1,-160,1,0); titleText.Position=UDim2.new(0,30,0,0)
+titleText.BackgroundTransparency=1; titleText.Text="ONTOY HUB  <font color='#C81E32'>·</font>  Blox Fruits"
+titleText.RichText=true; titleText.TextColor3=REDZ.TextMain
+titleText.Font=Enum.Font.GothamBold; titleText.TextSize=13; titleText.TextXAlignment=Enum.TextXAlignment.Left
 
-local byLabel = Instance.new("TextLabel", titleBar)
-byLabel.Size                   = UDim2.new(0, 80, 1, 0)
-byLabel.Position               = UDim2.new(0, 195, 0, 0)
-byLabel.BackgroundTransparency = 1
-byLabel.Text                   = "by ontoy"
-byLabel.TextColor3             = REDZ.TextSub
-byLabel.Font                   = Enum.Font.Gotham
-byLabel.TextSize               = 11
-byLabel.TextXAlignment         = Enum.TextXAlignment.Left
+local byLabel=Instance.new("TextLabel",titleBar)
+byLabel.Size=UDim2.new(0,80,1,0); byLabel.Position=UDim2.new(0,195,0,0)
+byLabel.BackgroundTransparency=1; byLabel.Text="by ontoy"
+byLabel.TextColor3=REDZ.TextSub; byLabel.Font=Enum.Font.Gotham
+byLabel.TextSize=11; byLabel.TextXAlignment=Enum.TextXAlignment.Left
 
-local function MakeWindowBtn(parent, xOff, bg, txt)
-	local btn = Instance.new("TextButton", parent)
-	btn.Size = UDim2.new(0, 26, 0, 26); btn.Position = UDim2.new(1, xOff, 0.5, -13)
-	btn.BackgroundColor3 = bg; btn.Text = txt
-	btn.TextColor3 = Color3.fromRGB(255,255,255)
-	btn.Font = Enum.Font.GothamBold; btn.TextSize = 11; btn.BorderSizePixel = 0
-	Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
+local function MakeWindowBtn(parent,xOff,bg,txt)
+	local btn=Instance.new("TextButton",parent)
+	btn.Size=UDim2.new(0,26,0,26); btn.Position=UDim2.new(1,xOff,0.5,-13)
+	btn.BackgroundColor3=bg; btn.Text=txt; btn.TextColor3=Color3.fromRGB(255,255,255)
+	btn.Font=Enum.Font.GothamBold; btn.TextSize=11; btn.BorderSizePixel=0
+	Instance.new("UICorner",btn).CornerRadius=UDim.new(0,6)
 	return btn
 end
 
-local closeBtn    = MakeWindowBtn(titleBar, -34, REDZ.Accent,    "✕")
-local minimizeBtn = MakeWindowBtn(titleBar, -66, REDZ.ToggleOff, "—")
+local closeBtn   =MakeWindowBtn(titleBar,-34,REDZ.Accent,   "✕")
+local minimizeBtn=MakeWindowBtn(titleBar,-66,REDZ.ToggleOff,"—")
 
-local sidebar = Instance.new("Frame", mainWindow)
-sidebar.Size = UDim2.new(0, 148, 1, -42); sidebar.Position = UDim2.new(0, 0, 0, 42)
-sidebar.BackgroundColor3 = REDZ.BG2; sidebar.BorderSizePixel = 0
-Instance.new("UICorner", sidebar).CornerRadius = UDim.new(0, 10)
-local sideStroke = Instance.new("UIStroke", sidebar)
-sideStroke.Color = REDZ.Stroke; sideStroke.Thickness = 1
-local sideLayout = Instance.new("UIListLayout", sidebar)
-sideLayout.Padding = UDim.new(0, 3)
-sideLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
-Instance.new("UIPadding", sidebar).PaddingTop = UDim.new(0, 12)
+local sidebar=Instance.new("Frame",mainWindow)
+sidebar.Size=UDim2.new(0,148,1,-42); sidebar.Position=UDim2.new(0,0,0,42)
+sidebar.BackgroundColor3=REDZ.BG2; sidebar.BorderSizePixel=0
+Instance.new("UICorner",sidebar).CornerRadius=UDim.new(0,10)
+local sideStroke=Instance.new("UIStroke",sidebar); sideStroke.Color=REDZ.Stroke; sideStroke.Thickness=1
+local sideLayout=Instance.new("UIListLayout",sidebar)
+sideLayout.Padding=UDim.new(0,3); sideLayout.HorizontalAlignment=Enum.HorizontalAlignment.Center
+Instance.new("UIPadding",sidebar).PaddingTop=UDim.new(0,12)
 
-local contentArea = Instance.new("Frame", mainWindow)
-contentArea.Size = UDim2.new(1, -156, 1, -50); contentArea.Position = UDim2.new(0, 152, 0, 46)
-contentArea.BackgroundTransparency = 1; contentArea.BorderSizePixel = 0
+local contentArea=Instance.new("Frame",mainWindow)
+contentArea.Size=UDim2.new(1,-156,1,-50); contentArea.Position=UDim2.new(0,152,0,46)
+contentArea.BackgroundTransparency=1; contentArea.BorderSizePixel=0
 
-local contentScroll = Instance.new("ScrollingFrame", contentArea)
-contentScroll.Size = UDim2.new(1, 0, 1, 0); contentScroll.BackgroundTransparency = 1
-contentScroll.BorderSizePixel = 0; contentScroll.ScrollBarThickness = 3
-contentScroll.ScrollBarImageColor3 = REDZ.AccentDim
-contentScroll.CanvasSize = UDim2.new(0,0,0,0)
-contentScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+local contentScroll=Instance.new("ScrollingFrame",contentArea)
+contentScroll.Size=UDim2.new(1,0,1,0); contentScroll.BackgroundTransparency=1
+contentScroll.BorderSizePixel=0; contentScroll.ScrollBarThickness=3
+contentScroll.ScrollBarImageColor3=REDZ.AccentDim
+contentScroll.CanvasSize=UDim2.new(0,0,0,0); contentScroll.AutomaticCanvasSize=Enum.AutomaticSize.Y
 
-local contentLayout = Instance.new("UIListLayout", contentScroll)
-contentLayout.Padding = UDim.new(0, 6)
-contentLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
-Instance.new("UIPadding", contentScroll).PaddingTop = UDim.new(0, 8)
+local contentLayout=Instance.new("UIListLayout",contentScroll)
+contentLayout.Padding=UDim.new(0,6); contentLayout.HorizontalAlignment=Enum.HorizontalAlignment.Center
+Instance.new("UIPadding",contentScroll).PaddingTop=UDim.new(0,8)
 
-local pages = {}; local sidebarButtons = {}
+local pages={}; local sidebarButtons={}
 
 local function MakePage()
-	local pg = Instance.new("Frame", contentScroll)
-	pg.Size = UDim2.new(1, 0, 0, 0); pg.AutomaticSize = Enum.AutomaticSize.Y
-	pg.BackgroundTransparency = 1; pg.BorderSizePixel = 0; pg.Visible = false
-	local lay = Instance.new("UIListLayout", pg)
-	lay.Padding = UDim.new(0, 6); lay.HorizontalAlignment = Enum.HorizontalAlignment.Center
-	Instance.new("UIPadding", pg).PaddingBottom = UDim.new(0, 8)
+	local pg=Instance.new("Frame",contentScroll)
+	pg.Size=UDim2.new(1,0,0,0); pg.AutomaticSize=Enum.AutomaticSize.Y
+	pg.BackgroundTransparency=1; pg.BorderSizePixel=0; pg.Visible=false
+	local lay=Instance.new("UIListLayout",pg)
+	lay.Padding=UDim.new(0,6); lay.HorizontalAlignment=Enum.HorizontalAlignment.Center
+	Instance.new("UIPadding",pg).PaddingBottom=UDim.new(0,8)
 	return pg
 end
 
-local function MakeSidebarBtn(icon, label, id)
-	local btn = Instance.new("TextButton", sidebar)
-	btn.Size = UDim2.new(1, -14, 0, 38); btn.BackgroundColor3 = REDZ.ToggleOff
-	btn.BackgroundTransparency = 1; btn.Text = ""; btn.BorderSizePixel = 0
-	Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 7)
-	local accentBar = Instance.new("Frame", btn)
-	accentBar.Size = UDim2.new(0, 3, 0.6, 0); accentBar.Position = UDim2.new(0, 0, 0.2, 0)
-	accentBar.BackgroundColor3 = REDZ.Accent; accentBar.BorderSizePixel = 0; accentBar.Visible = false
-	Instance.new("UICorner", accentBar).CornerRadius = UDim.new(0, 2)
-	local iconL = Instance.new("TextLabel", btn)
-	iconL.Size = UDim2.new(0, 22, 1, 0); iconL.Position = UDim2.new(0, 10, 0, 0)
-	iconL.BackgroundTransparency = 1; iconL.Text = icon
-	iconL.TextColor3 = REDZ.TextSub; iconL.Font = Enum.Font.GothamBold; iconL.TextSize = 14
-	local labelL = Instance.new("TextLabel", btn)
-	labelL.Size = UDim2.new(1, -38, 1, 0); labelL.Position = UDim2.new(0, 36, 0, 0)
-	labelL.BackgroundTransparency = 1; labelL.Text = label
-	labelL.TextColor3 = REDZ.TextSub; labelL.Font = Enum.Font.Gotham; labelL.TextSize = 12
-	labelL.TextXAlignment = Enum.TextXAlignment.Left
-	sidebarButtons[id] = {btn=btn, icon=iconL, label=labelL, bar=accentBar}
+local function MakeSidebarBtn(icon,label,id)
+	local btn=Instance.new("TextButton",sidebar)
+	btn.Size=UDim2.new(1,-14,0,38); btn.BackgroundColor3=REDZ.ToggleOff
+	btn.BackgroundTransparency=1; btn.Text=""; btn.BorderSizePixel=0
+	Instance.new("UICorner",btn).CornerRadius=UDim.new(0,7)
+	local accentBar=Instance.new("Frame",btn)
+	accentBar.Size=UDim2.new(0,3,0.6,0); accentBar.Position=UDim2.new(0,0,0.2,0)
+	accentBar.BackgroundColor3=REDZ.Accent; accentBar.BorderSizePixel=0; accentBar.Visible=false
+	Instance.new("UICorner",accentBar).CornerRadius=UDim.new(0,2)
+	local iconL=Instance.new("TextLabel",btn)
+	iconL.Size=UDim2.new(0,22,1,0); iconL.Position=UDim2.new(0,10,0,0)
+	iconL.BackgroundTransparency=1; iconL.Text=icon
+	iconL.TextColor3=REDZ.TextSub; iconL.Font=Enum.Font.GothamBold; iconL.TextSize=14
+	local labelL=Instance.new("TextLabel",btn)
+	labelL.Size=UDim2.new(1,-38,1,0); labelL.Position=UDim2.new(0,36,0,0)
+	labelL.BackgroundTransparency=1; labelL.Text=label
+	labelL.TextColor3=REDZ.TextSub; labelL.Font=Enum.Font.Gotham; labelL.TextSize=12
+	labelL.TextXAlignment=Enum.TextXAlignment.Left
+	sidebarButtons[id]={btn=btn,icon=iconL,label=labelL,bar=accentBar}
 	return btn
 end
 
 local function SetActivePage(id)
-	for pid, pg in pairs(pages) do pg.Visible = (pid == id) end
-	for bid, sb in pairs(sidebarButtons) do
-		local active = (bid == id)
-		sb.btn.BackgroundTransparency = active and 0 or 1
-		sb.btn.BackgroundColor3       = active and Color3.fromRGB(30,18,22) or REDZ.ToggleOff
-		sb.icon.TextColor3            = active and REDZ.AccentGlow or REDZ.TextSub
-		sb.label.TextColor3           = active and REDZ.TextMain   or REDZ.TextSub
-		sb.bar.Visible                = active
+	for pid,pg in pairs(pages) do pg.Visible=(pid==id) end
+	for bid,sb in pairs(sidebarButtons) do
+		local active=(bid==id)
+		sb.btn.BackgroundTransparency=active and 0 or 1
+		sb.btn.BackgroundColor3=active and Color3.fromRGB(30,18,22) or REDZ.ToggleOff
+		sb.icon.TextColor3=active and REDZ.AccentGlow or REDZ.TextSub
+		sb.label.TextColor3=active and REDZ.TextMain or REDZ.TextSub
+		sb.bar.Visible=active
 	end
 end
 
-local function MakeSectionLabel(parent, text)
-	local lbl = Instance.new("TextLabel", parent)
-	lbl.Size = UDim2.new(1, -8, 0, 18); lbl.BackgroundTransparency = 1
-	lbl.Text = text; lbl.TextColor3 = REDZ.Accent
-	lbl.Font = Enum.Font.GothamBold; lbl.TextSize = 10
-	lbl.TextXAlignment = Enum.TextXAlignment.Left
+local function MakeSectionLabel(parent,text)
+	local lbl=Instance.new("TextLabel",parent)
+	lbl.Size=UDim2.new(1,-8,0,18); lbl.BackgroundTransparency=1
+	lbl.Text=text; lbl.TextColor3=REDZ.Accent
+	lbl.Font=Enum.Font.GothamBold; lbl.TextSize=10; lbl.TextXAlignment=Enum.TextXAlignment.Left
 	return lbl
 end
 
-local function MakeToggleRow(parent, label, sublabel, accentColor)
-	accentColor = accentColor or REDZ.Accent
-	local row = Instance.new("Frame", parent)
-	row.Size = UDim2.new(1, -8, 0, 52); row.BackgroundColor3 = REDZ.BG2; row.BorderSizePixel = 0
-	Instance.new("UICorner", row).CornerRadius = UDim.new(0, 8)
-	local stroke = Instance.new("UIStroke", row); stroke.Color = REDZ.Stroke; stroke.Thickness = 1
-	local title = Instance.new("TextLabel", row)
-	title.Size = UDim2.new(1, -60, 0, 22); title.Position = UDim2.new(0, 14, 0, 8)
-	title.BackgroundTransparency = 1; title.Text = label
-	title.TextColor3 = REDZ.TextMain; title.Font = Enum.Font.GothamBold; title.TextSize = 12
-	title.TextXAlignment = Enum.TextXAlignment.Left
+local function MakeToggleRow(parent,label,sublabel,accentColor)
+	accentColor=accentColor or REDZ.Accent
+	local row=Instance.new("Frame",parent)
+	row.Size=UDim2.new(1,-8,0,52); row.BackgroundColor3=REDZ.BG2; row.BorderSizePixel=0
+	Instance.new("UICorner",row).CornerRadius=UDim.new(0,8)
+	local stroke=Instance.new("UIStroke",row); stroke.Color=REDZ.Stroke; stroke.Thickness=1
+	local title=Instance.new("TextLabel",row)
+	title.Size=UDim2.new(1,-60,0,22); title.Position=UDim2.new(0,14,0,8)
+	title.BackgroundTransparency=1; title.Text=label
+	title.TextColor3=REDZ.TextMain; title.Font=Enum.Font.GothamBold; title.TextSize=12
+	title.TextXAlignment=Enum.TextXAlignment.Left
 	if sublabel then
-		local sub = Instance.new("TextLabel", row)
-		sub.Size = UDim2.new(1, -60, 0, 16); sub.Position = UDim2.new(0, 14, 0, 28)
-		sub.BackgroundTransparency = 1; sub.Text = sublabel
-		sub.TextColor3 = REDZ.TextSub; sub.Font = Enum.Font.Gotham; sub.TextSize = 10
-		sub.TextXAlignment = Enum.TextXAlignment.Left
+		local sub=Instance.new("TextLabel",row)
+		sub.Size=UDim2.new(1,-60,0,16); sub.Position=UDim2.new(0,14,0,28)
+		sub.BackgroundTransparency=1; sub.Text=sublabel
+		sub.TextColor3=REDZ.TextSub; sub.Font=Enum.Font.Gotham; sub.TextSize=10
+		sub.TextXAlignment=Enum.TextXAlignment.Left
 	end
-	local toggleBG = Instance.new("Frame", row)
-	toggleBG.Size = UDim2.new(0, 36, 0, 20); toggleBG.Position = UDim2.new(1, -48, 0.5, -10)
-	toggleBG.BackgroundColor3 = REDZ.ToggleOff; toggleBG.BorderSizePixel = 0
-	Instance.new("UICorner", toggleBG).CornerRadius = UDim.new(0, 10)
-	local toggleKnob = Instance.new("Frame", toggleBG)
-	toggleKnob.Size = UDim2.new(0, 14, 0, 14); toggleKnob.Position = UDim2.new(0, 3, 0.5, -7)
-	toggleKnob.BackgroundColor3 = REDZ.TextSub; toggleKnob.BorderSizePixel = 0
-	Instance.new("UICorner", toggleKnob).CornerRadius = UDim.new(0, 7)
-	local togBtn = Instance.new("TextButton", toggleBG)
-	togBtn.Size = UDim2.new(1, 8, 1, 8); togBtn.Position = UDim2.new(0, -4, 0, -4)
-	togBtn.BackgroundTransparency = 1; togBtn.Text = ""; togBtn.BorderSizePixel = 0
-	local state = false
+	local toggleBG=Instance.new("Frame",row)
+	toggleBG.Size=UDim2.new(0,36,0,20); toggleBG.Position=UDim2.new(1,-48,0.5,-10)
+	toggleBG.BackgroundColor3=REDZ.ToggleOff; toggleBG.BorderSizePixel=0
+	Instance.new("UICorner",toggleBG).CornerRadius=UDim.new(0,10)
+	local toggleKnob=Instance.new("Frame",toggleBG)
+	toggleKnob.Size=UDim2.new(0,14,0,14); toggleKnob.Position=UDim2.new(0,3,0.5,-7)
+	toggleKnob.BackgroundColor3=REDZ.TextSub; toggleKnob.BorderSizePixel=0
+	Instance.new("UICorner",toggleKnob).CornerRadius=UDim.new(0,7)
+	local togBtn=Instance.new("TextButton",toggleBG)
+	togBtn.Size=UDim2.new(1,8,1,8); togBtn.Position=UDim2.new(0,-4,0,-4)
+	togBtn.BackgroundTransparency=1; togBtn.Text=""; togBtn.BorderSizePixel=0
+	local state=false
 	local function SetState(s)
-		state = s
+		state=s
 		if s then
-			toggleBG.BackgroundColor3   = accentColor
-			toggleKnob.BackgroundColor3 = Color3.fromRGB(255,255,255)
-			toggleKnob.Position         = UDim2.new(1, -17, 0.5, -7)
-			row.BackgroundColor3        = Color3.fromRGB(24, 14, 18)
-			stroke.Color                = REDZ.AccentDim
+			toggleBG.BackgroundColor3=accentColor
+			toggleKnob.BackgroundColor3=Color3.fromRGB(255,255,255)
+			toggleKnob.Position=UDim2.new(1,-17,0.5,-7)
+			row.BackgroundColor3=Color3.fromRGB(24,14,18)
+			stroke.Color=REDZ.AccentDim
 		else
-			toggleBG.BackgroundColor3   = REDZ.ToggleOff
-			toggleKnob.BackgroundColor3 = REDZ.TextSub
-			toggleKnob.Position         = UDim2.new(0, 3, 0.5, -7)
-			row.BackgroundColor3        = REDZ.BG2
-			stroke.Color                = REDZ.Stroke
+			toggleBG.BackgroundColor3=REDZ.ToggleOff
+			toggleKnob.BackgroundColor3=REDZ.TextSub
+			toggleKnob.Position=UDim2.new(0,3,0.5,-7)
+			row.BackgroundColor3=REDZ.BG2
+			stroke.Color=REDZ.Stroke
 		end
 	end
 	togBtn.MouseButton1Click:Connect(function() SetState(not state) end)
 	return row, function() return state end, SetState
 end
 
-local function MakeSliderRow(parent, label, displayMin, displayMax, initPct, unit, onChanged)
-	local row = Instance.new("Frame", parent)
-	row.Size = UDim2.new(1, -8, 0, 66); row.BackgroundColor3 = REDZ.BG2; row.BorderSizePixel = 0
-	Instance.new("UICorner", row).CornerRadius = UDim.new(0, 8)
-	local stroke = Instance.new("UIStroke", row); stroke.Color = REDZ.Stroke; stroke.Thickness = 1
-	local title = Instance.new("TextLabel", row)
-	title.Size = UDim2.new(1, -80, 0, 20); title.Position = UDim2.new(0, 14, 0, 8)
-	title.BackgroundTransparency = 1; title.Text = label
-	title.TextColor3 = REDZ.TextMain; title.Font = Enum.Font.GothamBold; title.TextSize = 12
-	title.TextXAlignment = Enum.TextXAlignment.Left
-	local valLabel = Instance.new("TextLabel", row)
-	valLabel.Size = UDim2.new(0, 70, 0, 20); valLabel.Position = UDim2.new(1, -78, 0, 8)
-	valLabel.BackgroundTransparency = 1; valLabel.Font = Enum.Font.GothamBold; valLabel.TextSize = 12
-	valLabel.TextColor3 = REDZ.AccentGlow; valLabel.TextXAlignment = Enum.TextXAlignment.Right
-	local sliderBG = Instance.new("Frame", row)
-	sliderBG.Size = UDim2.new(1, -28, 0, 5); sliderBG.Position = UDim2.new(0, 14, 0, 42)
-	sliderBG.BackgroundColor3 = REDZ.SliderBG; sliderBG.BorderSizePixel = 0
-	Instance.new("UICorner", sliderBG).CornerRadius = UDim.new(0, 3)
-	local sliderHitbox = Instance.new("TextButton", sliderBG)
-	sliderHitbox.Size = UDim2.new(1, 0, 0, 28); sliderHitbox.Position = UDim2.new(0, 0, 0.5, -14)
-	sliderHitbox.BackgroundTransparency = 1; sliderHitbox.Text = ""
-	sliderHitbox.BorderSizePixel = 0; sliderHitbox.ZIndex = 5
-	local sliderFill = Instance.new("Frame", sliderBG)
-	sliderFill.Size = UDim2.new(initPct, 0, 1, 0); sliderFill.BackgroundColor3 = REDZ.SliderFill
-	sliderFill.BorderSizePixel = 0
-	Instance.new("UICorner", sliderFill).CornerRadius = UDim.new(0, 3)
-	local fillGlow = Instance.new("Frame", sliderFill)
-	fillGlow.Size = UDim2.new(0, 6, 0, 6); fillGlow.Position = UDim2.new(1, -3, 0.5, -3)
-	fillGlow.BackgroundColor3 = REDZ.AccentGlow; fillGlow.BorderSizePixel = 0
-	Instance.new("UICorner", fillGlow).CornerRadius = UDim.new(0, 3)
-	local knob = Instance.new("Frame", sliderBG)
-	knob.Size = UDim2.new(0, 14, 0, 14); knob.Position = UDim2.new(initPct, -7, 0.5, -7)
-	knob.BackgroundColor3 = Color3.fromRGB(255,255,255); knob.BorderSizePixel = 0
-	Instance.new("UICorner", knob).CornerRadius = UDim.new(0, 7)
-	local knobRing = Instance.new("UIStroke", knob)
-	knobRing.Color = REDZ.Accent; knobRing.Thickness = 2
-	local dragging = false
+local function MakeSliderRow(parent,label,displayMin,displayMax,initPct,unit,onChanged)
+	local row=Instance.new("Frame",parent)
+	row.Size=UDim2.new(1,-8,0,66); row.BackgroundColor3=REDZ.BG2; row.BorderSizePixel=0
+	Instance.new("UICorner",row).CornerRadius=UDim.new(0,8)
+	local stroke=Instance.new("UIStroke",row); stroke.Color=REDZ.Stroke; stroke.Thickness=1
+	local title=Instance.new("TextLabel",row)
+	title.Size=UDim2.new(1,-80,0,20); title.Position=UDim2.new(0,14,0,8)
+	title.BackgroundTransparency=1; title.Text=label
+	title.TextColor3=REDZ.TextMain; title.Font=Enum.Font.GothamBold; title.TextSize=12
+	title.TextXAlignment=Enum.TextXAlignment.Left
+	local valLabel=Instance.new("TextLabel",row)
+	valLabel.Size=UDim2.new(0,70,0,20); valLabel.Position=UDim2.new(1,-78,0,8)
+	valLabel.BackgroundTransparency=1; valLabel.Font=Enum.Font.GothamBold; valLabel.TextSize=12
+	valLabel.TextColor3=REDZ.AccentGlow; valLabel.TextXAlignment=Enum.TextXAlignment.Right
+	local sliderBG=Instance.new("Frame",row)
+	sliderBG.Size=UDim2.new(1,-28,0,5); sliderBG.Position=UDim2.new(0,14,0,42)
+	sliderBG.BackgroundColor3=REDZ.SliderBG; sliderBG.BorderSizePixel=0
+	Instance.new("UICorner",sliderBG).CornerRadius=UDim.new(0,3)
+	local sliderHitbox=Instance.new("TextButton",sliderBG)
+	sliderHitbox.Size=UDim2.new(1,0,0,28); sliderHitbox.Position=UDim2.new(0,0,0.5,-14)
+	sliderHitbox.BackgroundTransparency=1; sliderHitbox.Text=""
+	sliderHitbox.BorderSizePixel=0; sliderHitbox.ZIndex=5
+	local sliderFill=Instance.new("Frame",sliderBG)
+	sliderFill.Size=UDim2.new(initPct,0,1,0); sliderFill.BackgroundColor3=REDZ.SliderFill
+	sliderFill.BorderSizePixel=0
+	Instance.new("UICorner",sliderFill).CornerRadius=UDim.new(0,3)
+	local fillGlow=Instance.new("Frame",sliderFill)
+	fillGlow.Size=UDim2.new(0,6,0,6); fillGlow.Position=UDim2.new(1,-3,0.5,-3)
+	fillGlow.BackgroundColor3=REDZ.AccentGlow; fillGlow.BorderSizePixel=0
+	Instance.new("UICorner",fillGlow).CornerRadius=UDim.new(0,3)
+	local knob=Instance.new("Frame",sliderBG)
+	knob.Size=UDim2.new(0,14,0,14); knob.Position=UDim2.new(initPct,-7,0.5,-7)
+	knob.BackgroundColor3=Color3.fromRGB(255,255,255); knob.BorderSizePixel=0
+	Instance.new("UICorner",knob).CornerRadius=UDim.new(0,7)
+	local knobRing=Instance.new("UIStroke",knob); knobRing.Color=REDZ.Accent; knobRing.Thickness=2
+	local dragging=false
 	local function Compute(px)
-		local bg = sliderBG.AbsolutePosition.X; local bw = sliderBG.AbsoluteSize.X
-		local pct = math.clamp((px - bg) / bw, 0, 1)
-		return pct, math.floor(displayMin + (displayMax - displayMin) * pct)
+		local bg=sliderBG.AbsolutePosition.X; local bw=sliderBG.AbsoluteSize.X
+		local pct=math.clamp((px-bg)/bw,0,1)
+		return pct, math.floor(displayMin+(displayMax-displayMin)*pct)
 	end
-	local function Apply(pct, val)
-		sliderFill.Size = UDim2.new(pct, 0, 1, 0); knob.Position = UDim2.new(pct, -7, 0.5, -7)
-		valLabel.Text = val .. (unit or "")
-		if onChanged then onChanged(val, pct) end
+	local function Apply(pct,val)
+		sliderFill.Size=UDim2.new(pct,0,1,0); knob.Position=UDim2.new(pct,-7,0.5,-7)
+		valLabel.Text=val..(unit or "")
+		if onChanged then onChanged(val,pct) end
 	end
-	Apply(initPct, math.floor(displayMin + (displayMax - displayMin) * initPct))
-	sliderHitbox.MouseButton1Down:Connect(function() dragging = true end)
+	Apply(initPct, math.floor(displayMin+(displayMax-displayMin)*initPct))
+	sliderHitbox.MouseButton1Down:Connect(function() dragging=true end)
 	UserInputService.InputChanged:Connect(function(input)
-		if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or
-			input.UserInputType == Enum.UserInputType.Touch) then
-			local p, v = Compute(input.Position.X); Apply(p, v)
+		if dragging and (input.UserInputType==Enum.UserInputType.MouseMovement or
+			input.UserInputType==Enum.UserInputType.Touch) then
+			local p,v=Compute(input.Position.X); Apply(p,v)
 		end
 	end)
 	UserInputService.InputEnded:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1 or
-		   input.UserInputType == Enum.UserInputType.Touch then dragging = false end
+		if input.UserInputType==Enum.UserInputType.MouseButton1 or
+		   input.UserInputType==Enum.UserInputType.Touch then dragging=false end
 	end)
 	sliderHitbox.MouseButton1Click:Connect(function()
-		local mouse = UserInputService:GetMouseLocation()
-		local p, v = Compute(mouse.X); Apply(p, v)
+		local mouse=UserInputService:GetMouseLocation()
+		local p,v=Compute(mouse.X); Apply(p,v)
 	end)
 	return row
 end
 
-local combatPage = MakePage(); pages["combat"] = combatPage
-local combatBtn  = MakeSidebarBtn("⚔", "Combat", "combat")
+local combatPage=MakePage(); pages["combat"]=combatPage
+local combatBtn =MakeSidebarBtn("⚔","Combat","combat")
+MakeSectionLabel(combatPage,"HITBOX")
+local _,hbGet,_     =MakeToggleRow(combatPage,"Hitbox Expand","Expand LocalRoot hitbox size")
+MakeSliderRow(combatPage,"Hitbox Size",1,100,0.0,"%",function(val) CONFIG.HitboxPercent=val end)
+MakeSectionLabel(combatPage,"COMBAT")
+local _,hbSpamGet,_ =MakeToggleRow(combatPage,"Hitbox Spam","Spawn hitbox parts at position")
+local _,dashGet,_   =MakeToggleRow(combatPage,"Dash Spam","Hold Q — auto dash no delay")
+MakeSectionLabel(combatPage,"SILENT AIM")
+local _,silentGet,_ =MakeToggleRow(combatPage,"Silent Aim","Kamera redirect ke target — semua jurus kena")
+MakeSliderRow(combatPage,"Silent Aim FOV",30,300,(CONFIG.SilentAimFOV-30)/270," px",function(val)
+	CONFIG.SilentAimFOV=val
+	if fovCircle then fovCircle.Radius=val end
+end)
+MakeSectionLabel(combatPage,"FAST ATTACK")
+local _,fastAtkGet,_=MakeToggleRow(combatPage,"Fast Attack","FireServer RegisterAttack tanpa delay animasi")
+MakeSliderRow(combatPage,"Attack HPS",1,30,(CONFIG.AttackHPS-1)/29," HPS",function(val) CONFIG.AttackHPS=val end)
 
-MakeSectionLabel(combatPage, "HITBOX")
-local _, hbGet, _      = MakeToggleRow(combatPage, "Hitbox Expand", "Expand LocalRoot hitbox size")
-MakeSliderRow(combatPage, "Hitbox Size", 1, 100, 0.0, "%", function(val) CONFIG.HitboxPercent = val end)
+local visualPage=MakePage(); pages["visual"]=visualPage
+local visualBtn =MakeSidebarBtn("👁","Visual","visual")
+MakeSectionLabel(visualPage,"ESP")
+local _,espGet,_    =MakeToggleRow(visualPage,"ESP","Player boxes, health, distance")
+local _,tracerGet,_ =MakeToggleRow(visualPage,"Tracers","Lines from screen to players")
 
-MakeSectionLabel(combatPage, "COMBAT")
-local _, hbSpamGet, _  = MakeToggleRow(combatPage, "Hitbox Spam",  "Spawn hitbox parts at position")
-local _, dashGet, _    = MakeToggleRow(combatPage, "Dash Spam",    "Hold Q — auto dash no delay")
-
-MakeSectionLabel(combatPage, "SILENT AIM")
-local _, silentGet, _  = MakeToggleRow(combatPage, "Silent Aim",   "Kamera redirect ke target — semua jurus kena")
-MakeSliderRow(combatPage, "Silent Aim FOV", 30, 300, (CONFIG.SilentAimFOV-30)/270, " px", function(val)
-	CONFIG.SilentAimFOV = val
-	if fovCircle then fovCircle.Radius = val end
+local movePage=MakePage(); pages["movement"]=movePage
+local moveBtn =MakeSidebarBtn("🏃","Movement","movement")
+MakeSectionLabel(movePage,"SPEED")
+local _,speedGet,_=MakeToggleRow(movePage,"Fast Run","Override WalkSpeed every frame")
+MakeSliderRow(movePage,"Speed",BASE_SPEED,MAX_SPEED,0.5," ws",function(val,pct)
+	CONFIG.SpeedPercent=pct*100
 end)
 
-MakeSectionLabel(combatPage, "FAST ATTACK")
-local _, fastAtkGet, _ = MakeToggleRow(combatPage, "Fast Attack",  "FireServer RegisterAttack tanpa delay animasi")
-MakeSliderRow(combatPage, "Attack HPS", 1, 30, (CONFIG.AttackHPS-1)/29, " HPS", function(val) CONFIG.AttackHPS = val end)
+local farmPage=MakePage(); pages["farm"]=farmPage
+local farmBtn =MakeSidebarBtn("🌾","Auto Farm","farm")
 
-local visualPage = MakePage(); pages["visual"] = visualPage
-local visualBtn  = MakeSidebarBtn("👁", "Visual", "visual")
-MakeSectionLabel(visualPage, "ESP")
-local _, espGet, _     = MakeToggleRow(visualPage, "ESP",     "Player boxes, health, distance")
-local _, tracerGet, _  = MakeToggleRow(visualPage, "Tracers", "Lines from screen to players")
+local statusCard=Instance.new("Frame",farmPage)
+statusCard.Size=UDim2.new(1,-8,0,52); statusCard.BackgroundColor3=REDZ.BG2; statusCard.BorderSizePixel=0
+Instance.new("UICorner",statusCard).CornerRadius=UDim.new(0,8)
+local statusStroke=Instance.new("UIStroke",statusCard); statusStroke.Color=REDZ.Stroke; statusStroke.Thickness=1
 
-local movePage  = MakePage(); pages["movement"] = movePage
-local moveBtn   = MakeSidebarBtn("🏃", "Movement", "movement")
-MakeSectionLabel(movePage, "SPEED")
-local _, speedGet, _ = MakeToggleRow(movePage, "Fast Run", "Override WalkSpeed every frame")
-MakeSliderRow(movePage, "Speed", BASE_SPEED, MAX_SPEED, 0.5, " ws", function(val, pct)
-	CONFIG.SpeedPercent = pct * 100
-end)
+local statusIcon=Instance.new("TextLabel",statusCard)
+statusIcon.Size=UDim2.new(0,20,1,0); statusIcon.Position=UDim2.new(0,12,0,0)
+statusIcon.BackgroundTransparency=1; statusIcon.Text="○"
+statusIcon.TextColor3=REDZ.TextSub; statusIcon.Font=Enum.Font.GothamBold; statusIcon.TextSize=14
 
-local farmPage = MakePage(); pages["farm"] = farmPage
-local farmBtn  = MakeSidebarBtn("🌾", "Auto Farm", "farm")
+local statusTitle=Instance.new("TextLabel",statusCard)
+statusTitle.Size=UDim2.new(1,-60,0,20); statusTitle.Position=UDim2.new(0,36,0,6)
+statusTitle.BackgroundTransparency=1; statusTitle.Text="AUTO FARM"
+statusTitle.TextColor3=REDZ.TextSub; statusTitle.Font=Enum.Font.GothamBold; statusTitle.TextSize=10
+statusTitle.TextXAlignment=Enum.TextXAlignment.Left
 
-local statusCard = Instance.new("Frame", farmPage)
-statusCard.Size = UDim2.new(1, -8, 0, 52); statusCard.BackgroundColor3 = REDZ.BG2
-statusCard.BorderSizePixel = 0
-Instance.new("UICorner", statusCard).CornerRadius = UDim.new(0, 8)
-local statusStroke = Instance.new("UIStroke", statusCard)
-statusStroke.Color = REDZ.Stroke; statusStroke.Thickness = 1
+local statusText=Instance.new("TextLabel",statusCard)
+statusText.Size=UDim2.new(1,-60,0,18); statusText.Position=UDim2.new(0,36,0,26)
+statusText.BackgroundTransparency=1; statusText.Text="Idle"
+statusText.TextColor3=REDZ.TextMain; statusText.Font=Enum.Font.Gotham; statusText.TextSize=11
+statusText.TextXAlignment=Enum.TextXAlignment.Left
 
-local statusIcon = Instance.new("TextLabel", statusCard)
-statusIcon.Size = UDim2.new(0, 20, 1, 0); statusIcon.Position = UDim2.new(0, 12, 0, 0)
-statusIcon.BackgroundTransparency = 1; statusIcon.Text = "○"
-statusIcon.TextColor3 = REDZ.TextSub; statusIcon.Font = Enum.Font.GothamBold; statusIcon.TextSize = 14
+local levelCard=Instance.new("Frame",farmPage)
+levelCard.Size=UDim2.new(1,-8,0,52); levelCard.BackgroundColor3=REDZ.BG2; levelCard.BorderSizePixel=0
+Instance.new("UICorner",levelCard).CornerRadius=UDim.new(0,8)
+Instance.new("UIStroke",levelCard).Color=REDZ.Stroke
 
-local statusTitle = Instance.new("TextLabel", statusCard)
-statusTitle.Size = UDim2.new(1, -60, 0, 20); statusTitle.Position = UDim2.new(0, 36, 0, 6)
-statusTitle.BackgroundTransparency = 1; statusTitle.Text = "AUTO FARM"
-statusTitle.TextColor3 = REDZ.TextSub; statusTitle.Font = Enum.Font.GothamBold; statusTitle.TextSize = 10
-statusTitle.TextXAlignment = Enum.TextXAlignment.Left
+local levelText=Instance.new("TextLabel",levelCard)
+levelText.Size=UDim2.new(1,-16,1,0); levelText.Position=UDim2.new(0,12,0,0)
+levelText.BackgroundTransparency=1; levelText.Text="Level: — | Island: — | Target: —"
+levelText.TextColor3=REDZ.TextSub; levelText.Font=Enum.Font.Gotham; levelText.TextSize=11
+levelText.TextXAlignment=Enum.TextXAlignment.Left; levelText.TextWrapped=true
 
-local statusText = Instance.new("TextLabel", statusCard)
-statusText.Size = UDim2.new(1, -60, 0, 18); statusText.Position = UDim2.new(0, 36, 0, 26)
-statusText.BackgroundTransparency = 1; statusText.Text = "Idle"
-statusText.TextColor3 = REDZ.TextMain; statusText.Font = Enum.Font.Gotham; statusText.TextSize = 11
-statusText.TextXAlignment = Enum.TextXAlignment.Left
-
-local levelCard = Instance.new("Frame", farmPage)
-levelCard.Size = UDim2.new(1, -8, 0, 52); levelCard.BackgroundColor3 = REDZ.BG2
-levelCard.BorderSizePixel = 0
-Instance.new("UICorner", levelCard).CornerRadius = UDim.new(0, 8)
-Instance.new("UIStroke", levelCard).Color = REDZ.Stroke
-
-local levelText = Instance.new("TextLabel", levelCard)
-levelText.Size = UDim2.new(1, -16, 1, 0); levelText.Position = UDim2.new(0, 12, 0, 0)
-levelText.BackgroundTransparency = 1
-levelText.Text = "Level: — | Island: — | Target: —"
-levelText.TextColor3 = REDZ.TextSub; levelText.Font = Enum.Font.Gotham; levelText.TextSize = 11
-levelText.TextXAlignment = Enum.TextXAlignment.Left
-levelText.TextWrapped = true
-
-MakeSectionLabel(farmPage, "MAIN")
-local _, farmGet, farmSet = MakeToggleRow(farmPage, "Auto Farm",
-	"Detect level → fly ke NPC → quest → hover attack", REDZ.Green)
-
-MakeSectionLabel(farmPage, "SETTINGS")
-local _, noclipGet, _ = MakeToggleRow(farmPage, "Noclip", "CanCollide = false saat farm aktif")
-
-MakeSliderRow(farmPage, "Fly Speed", 50, 700, (CONFIG.FarmFlySpeed-50)/650, " stud/s",
-	function(val) CONFIG.FarmFlySpeed = val end)
-
-MakeSliderRow(farmPage, "Hover Height", 2, 20, (CONFIG.FarmHoverHeight-2)/18, " stud",
-	function(val) CONFIG.FarmHoverHeight = val end)
+MakeSectionLabel(farmPage,"MAIN")
+local _,farmGet,farmSet=MakeToggleRow(farmPage,"Auto Farm","Detect level → fly ke NPC → quest → hover attack",REDZ.Green)
+MakeSectionLabel(farmPage,"SETTINGS")
+local _,noclipGet,_=MakeToggleRow(farmPage,"Noclip","CanCollide = false saat farm aktif")
+MakeSliderRow(farmPage,"Fly Speed",50,700,(CONFIG.FarmFlySpeed-50)/650," stud/s",function(val) CONFIG.FarmFlySpeed=val end)
+MakeSliderRow(farmPage,"Hover Height",2,20,(CONFIG.FarmHoverHeight-2)/18," stud",function(val) CONFIG.FarmHoverHeight=val end)
 
 RunService.Heartbeat:Connect(function()
-	local farmData, level = GetFarmData()
+	local farmData,level=GetFarmData()
 	if CONFIG.Mode9 then
-		statusIcon.TextColor3       = REDZ.Green
-		statusIcon.Text             = "●"
-		statusTitle.TextColor3      = REDZ.Green
-		statusCard.BackgroundColor3 = Color3.fromRGB(12, 22, 14)
-		statusStroke.Color          = REDZ.GreenDim
+		statusIcon.TextColor3=REDZ.Green; statusIcon.Text="●"
+		statusTitle.TextColor3=REDZ.Green
+		statusCard.BackgroundColor3=Color3.fromRGB(12,22,14); statusStroke.Color=REDZ.GreenDim
 	else
-		statusIcon.TextColor3       = REDZ.TextSub
-		statusIcon.Text             = "○"
-		statusTitle.TextColor3      = REDZ.TextSub
-		statusCard.BackgroundColor3 = REDZ.BG2
-		statusStroke.Color          = REDZ.Stroke
+		statusIcon.TextColor3=REDZ.TextSub; statusIcon.Text="○"
+		statusTitle.TextColor3=REDZ.TextSub
+		statusCard.BackgroundColor3=REDZ.BG2; statusStroke.Color=REDZ.Stroke
 	end
-	statusText.Text = farmStatus
+	statusText.Text=farmStatus
 	if farmData then
-		levelText.Text = ("Lv %d  |  Sea %d  |  %s  |  Target: %s  [Lv %d-%d]"):format(
-			level or 0, farmData.Sea or 1, farmData.Island, farmData.MobName, farmData.MinLvl, farmData.MaxLvl)
+		levelText.Text=("Lv %d  |  Sea %d  |  %s  |  Target: %s  [Lv %d-%d]"):format(
+			level or 0,farmData.Sea or 1,farmData.Island,farmData.MobName,farmData.MinLvl,farmData.MaxLvl)
 	else
-		levelText.Text = ("Lv %d  |  Data tidak ditemukan"):format(level or 0)
+		levelText.Text=("Lv %d  |  Data tidak ditemukan"):format(level or 0)
 	end
 end)
 
-local function WireToggle(getter, configKey, onEnable, onDisable)
+local function WireToggle(getter,configKey,onEnable,onDisable)
 	RunService.Heartbeat:Connect(function()
-		local s = getter()
-		if CONFIG[configKey] ~= s then
-			CONFIG[configKey] = s
+		local s=getter()
+		if CONFIG[configKey]~=s then
+			CONFIG[configKey]=s
 			if s then if onEnable  then onEnable()  end
 			else      if onDisable then onDisable()  end end
 		end
 	end)
 end
 
-WireToggle(hbGet,      "Mode1", nil, RestoreHitbox)
-WireToggle(hbSpamGet,  "Mode2")
-WireToggle(espGet,     "Mode3", nil, HideAllESP)
-WireToggle(tracerGet,  "Mode4", nil, function()
-	for _, esp in pairs(ESP_Objects) do esp.Line.Visible = false end
+WireToggle(hbGet,     "Mode1",nil,RestoreHitbox)
+WireToggle(hbSpamGet, "Mode2")
+WireToggle(espGet,    "Mode3",nil,HideAllESP)
+WireToggle(tracerGet, "Mode4",nil,function()
+	for _,esp in pairs(ESP_Objects) do esp.Line.Visible=false end
 end)
-WireToggle(speedGet,   "Mode5", nil, function() LocalHumanoid.WalkSpeed = BASE_SPEED end)
-WireToggle(dashGet,    "Mode6", StartDashLoop, StopDashLoop)
-WireToggle(silentGet,  "Mode7", nil, function()
-	silentTarget = nil
-	if fovCircle then fovCircle.Visible = false end
+WireToggle(speedGet,  "Mode5",nil,function() LocalHumanoid.WalkSpeed=BASE_SPEED end)
+WireToggle(dashGet,   "Mode6",StartDashLoop,StopDashLoop)
+WireToggle(silentGet, "Mode7",nil,function()
+	silentTarget=nil
+	if fovCircle then fovCircle.Visible=false end
 end)
-WireToggle(fastAtkGet, "Mode8", StartFastAttack, StopFastAttack)
-WireToggle(farmGet,    "Mode9",
-	function() StartNoclip() StartFarm() farmStatus = "Starting..." end,
-	function() StopFarm() farmStatus = "Idle" end
+WireToggle(fastAtkGet,"Mode8",StartFastAttack,StopFastAttack)
+WireToggle(farmGet,   "Mode9",
+	function() StartNoclip() StartFarm() farmStatus="Starting..." end,
+	function() StopFarm() farmStatus="Idle" end
 )
 WireToggle(noclipGet, "Mode10",
 	function() if not CONFIG.Mode9 then StartNoclip() end end,
@@ -1099,48 +1064,51 @@ moveBtn.MouseButton1Click:Connect(function()   SetActivePage("movement") end)
 farmBtn.MouseButton1Click:Connect(function()   SetActivePage("farm")     end)
 SetActivePage("combat")
 
-local contentVisible = true
+local contentVisible=true
 minimizeBtn.MouseButton1Click:Connect(function()
-	contentVisible = not contentVisible
-	sidebar.Visible = contentVisible; contentArea.Visible = contentVisible
-	mainWindow.Size = contentVisible and UDim2.new(0, 580, 0, 400) or UDim2.new(0, 580, 0, 42)
+	contentVisible=not contentVisible
+	sidebar.Visible=contentVisible; contentArea.Visible=contentVisible
+	mainWindow.Size=contentVisible and UDim2.new(0,580,0,400) or UDim2.new(0,580,0,42)
 end)
 
 closeBtn.MouseButton1Click:Connect(function()
-	RestoreHitbox(); LocalHumanoid.WalkSpeed = BASE_SPEED
+	RestoreHitbox(); LocalHumanoid.WalkSpeed=BASE_SPEED
 	HideAllESP(); StopDashLoop(); StopFastAttack(); StopFarm()
 	if fovCircle then pcall(function() fovCircle:Remove() end) end
 	screenGui:Destroy()
 end)
 
 LocalPlayer.CharacterAdded:Connect(function(char)
-	LocalCharacter = char
-	LocalRoot      = char:WaitForChild("HumanoidRootPart")
-	LocalHumanoid  = char:WaitForChild("Humanoid")
-	OriginalLocalSize = nil; dashHolding = false; silentTarget = nil
+	LocalCharacter=char
+	LocalRoot    =char:WaitForChild("HumanoidRootPart")
+	LocalHumanoid=char:WaitForChild("Humanoid")
+	OriginalLocalSize=nil; dashHolding=false; silentTarget=nil
+	currentFarmMob=nil
 	if CONFIG.Mode9 then
-		farmState      = FARM_STATE.GO_QUEST
-		waitingFly     = false
-		waitSpawnTimer = 0
-		farmStatus     = "Respawned — restarting"
+		farmState     =FARM_STATE.GO_QUEST
+		waitingFly    =false
+		waitSpawnTimer=0
+		lastQuestCall =0
+		questStuckTimer=0
+		farmStatus    ="Respawned — restarting"
 	end
-	if CONFIG.Mode5 then LocalHumanoid.WalkSpeed = GetTargetSpeed() end
+	if CONFIG.Mode5 then LocalHumanoid.WalkSpeed=GetTargetSpeed() end
 end)
 
 RunService.RenderStepped:Connect(function()
 	if CONFIG.Mode1 then ExpandHitbox() end
 	if CONFIG.Mode2 and LocalRoot then Mode2Func(LocalRoot.Position) end
-	if CONFIG.Mode5 then LocalHumanoid.WalkSpeed = GetTargetSpeed() end
+	if CONFIG.Mode5 then LocalHumanoid.WalkSpeed=GetTargetSpeed() end
 	if CONFIG.Mode7 then
 		ApplySilentAim()
-		local vp = Camera.ViewportSize
+		local vp=Camera.ViewportSize
 		if fovCircle then
-			fovCircle.Position = Vector2.new(vp.X / 2, vp.Y / 2)
-			fovCircle.Radius   = CONFIG.SilentAimFOV
-			fovCircle.Visible  = true
+			fovCircle.Position=Vector2.new(vp.X/2,vp.Y/2)
+			fovCircle.Radius=CONFIG.SilentAimFOV
+			fovCircle.Visible=true
 		end
 	else
-		if fovCircle then fovCircle.Visible = false end
+		if fovCircle then fovCircle.Visible=false end
 	end
 	RenderESP()
 end)
