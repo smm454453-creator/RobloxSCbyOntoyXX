@@ -61,16 +61,19 @@ end
 
 local function StartClearVision()
 	if S.clearVisionConn then return end
-	for _, obj in ipairs(Lighting:GetChildren()) do
-		if obj:IsA("Atmosphere") or obj:IsA("ColorCorrectionEffect") or obj:IsA("BloomEffect") or obj:IsA("SunRaysEffect") then
-			pcall(function() obj.Enabled = false end)
-		end
-	end
 	S.clearVisionConn = RunService.RenderStepped:Connect(function()
 		Lighting.Brightness = 2
 		Lighting.ClockTime = 12
 		Lighting.FogEnd = 100000
 		Lighting.GlobalShadows = false
+		Lighting.Ambient = Color3.fromRGB(255, 255, 255)
+		Lighting.OutdoorAmbient = Color3.fromRGB(255, 255, 255)
+		
+		for _, obj in ipairs(Lighting:GetChildren()) do
+			if obj:IsA("Atmosphere") or obj:IsA("ColorCorrectionEffect") or obj:IsA("BloomEffect") or obj:IsA("SunRaysEffect") or obj:IsA("BlurEffect") then
+				pcall(function() obj.Enabled = false end)
+			end
+		end
 	end)
 end
 
