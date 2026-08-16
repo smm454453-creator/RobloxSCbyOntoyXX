@@ -17,52 +17,77 @@ end
 local CONFIG = {
 	SilentAim    = false,
 	TargetBone   = "Head",
-	SilentFOV    = 120,
-	Smoothness   = 1,
+	SilentFOV    = 60,
 	FastRun      = false,
 	WalkSpeed    = 50,
 	InfiniteJump = false,
 	JumpPower    = 80,
 	PlayerESP    = false,
-	EnemyLineESP = false,
+	SkeletonESP  = false,
 }
 
+-- ── LOS CHECK ────────────────────────────────────────────────────────────────
+local function IsVisible(bone, targetChar)
+	local myChar = LP.Character
+	local camPos = Camera.CFrame.Position
+	local dir    = bone.Position - camPos
+	local dist   = dir.Magnitude
+	if dist < 0.1 then return true end
+
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.FilterDescendantsInstances = myChar and {myChar} or {}
+
+	local result = Workspace:Raycast(camPos, dir.Unit * dist, params)
+	if not result then return true end
+	return result.Instance ~= nil and result.Instance:IsDescendantOf(targetChar)
+end
+
+-- ── GET BEST TARGET ───────────────────────────────────────────────────────────
+-- Hanya cari target dalam FOV radius — TIDAK redirect kamera sama sekali
+-- Kamera sepenuhnya dikendalikan user, namecall hook yang belokkan projectile
 local function GetBestTarget()
-	local vp = Camera.ViewportSize
-	local cx, cy = vp.X / 2, vp.Y / 2
-	local best, bestD = nil, math.huge
+	local vp    = Camera.ViewportSize
+	local cx    = vp.X / 2
+	local cy    = vp.Y / 2
+	local best  = nil
+	local bestD = math.huge
+
 	for _, p in ipairs(Players:GetPlayers()) do
 		if p == LP then continue end
 		local pc = p.Character
 		if not pc then continue end
-		local bone = pc:FindFirstChild(CONFIG.TargetBone) or pc:FindFirstChild("HumanoidRootPart")
-		local hum  = pc:FindFirstChildOfClass("Humanoid")
-		if not (bone and hum and hum.Health > 0) then continue end
-		local sc, on = Camera:WorldToViewportPoint(bone.Position)
-		local d = math.sqrt((sc.X - cx)^2 + (sc.Y - cy)^2)
-		if (on or sc.Z > 0) and d < CONFIG.SilentFOV and d < bestD then
+
+		local bone = pc:FindFirstChild(CONFIG.TargetBone)
+			or pc:FindFirstChild("HumanoidRootPart")
+		local hum = pc:FindFirstChildOfClass("Humanoid")
+		if not bone or not hum or hum.Health <= 0 then continue end
+
+		-- 1. On-screen
+		local sc, onScreen = Camera:WorldToViewportPoint(bone.Position)
+		if not onScreen or sc.Z <= 0 then continue end
+
+		-- 2. Dalam FOV radius (screen-space px dari tengah layar)
+		local dx = sc.X - cx
+		local dy = sc.Y - cy
+		local d  = math.sqrt(dx*dx + dy*dy)
+		if d >= CONFIG.SilentFOV then continue end
+
+		-- 3. LOS clear — tembok = skip, tidak ada fallback
+		if not IsVisible(bone, pc) then continue end
+
+		if d < bestD then
 			bestD = d
 			best  = bone
 		end
 	end
-	if not best then
-		for _, p in ipairs(Players:GetPlayers()) do
-			if p == LP then continue end
-			local pc = p.Character
-			if not pc then continue end
-			local bone = pc:FindFirstChild(CONFIG.TargetBone) or pc:FindFirstChild("HumanoidRootPart")
-			local hum  = pc:FindFirstChildOfClass("Humanoid")
-			if not (bone and hum and hum.Health > 0) then continue end
-			local sc = Camera:WorldToViewportPoint(bone.Position)
-			if sc.Z > 0 then
-				local d = math.sqrt((sc.X - cx)^2 + (sc.Y - cy)^2)
-				if d < bestD then bestD = d best = bone end
-			end
-		end
-	end
+
 	return best
 end
 
+-- ── NAMECALL HOOK — satu-satunya tempat redirect terjadi ─────────────────────
+-- Kamera TIDAK disentuh di sini maupun di tempat lain
+-- Kalau GetBestTarget() nil → semua args lewat normal, tidak ada snap
 local namecallHooked = false
 local function HookNamecall()
 	if namecallHooked then return end
@@ -70,19 +95,24 @@ local function HookNamecall()
 	local old
 	old = hookmetamethod(game, "__namecall", function(self, ...)
 		if not CONFIG.SilentAim then return old(self, ...) end
+
 		local m    = getnamecallmethod()
 		local bone = GetBestTarget()
-		if not (bone and bone.Parent) then return old(self, ...) end
+
+		-- Tidak ada target dalam radius → pass through tanpa modifikasi
+		if not bone or not bone.Parent then return old(self, ...) end
+
 		local bPos = bone.Position
 		local camP = Camera.CFrame.Position
 		local dir  = (bPos - camP).Unit
+
 		if m == "FireServer" or m == "InvokeServer" or m == "Fire" then
 			local args = {...}
 			for i, v in ipairs(args) do
 				if typeof(v) == "Instance" and v:IsA("BasePart") then
 					args[i] = bone
 				elseif typeof(v) == "Ray" then
-					args[i] = Ray.new(camP, dir * 5000)
+					args[i] = Ray.new(camP, dir * 1000)
 				elseif typeof(v) == "CFrame" then
 					args[i] = CFrame.new(bPos)
 				elseif typeof(v) == "Vector3" then
@@ -91,31 +121,25 @@ local function HookNamecall()
 			end
 			return old(self, table.unpack(args))
 		end
+
 		if m == "Raycast" and self == Workspace then
-			local params = select(3, ...)
-			return old(self, camP, dir * 5000, params)
+			return old(self, camP, dir * 1000, select(3, ...))
 		end
-		if m == "FindPartOnRay" or m == "FindPartOnRayWithIgnoreList" or m == "FindPartOnRayWithWhitelist" then
+
+		if m == "FindPartOnRay"
+		or m == "FindPartOnRayWithIgnoreList"
+		or m == "FindPartOnRayWithWhitelist" then
 			local args = {...}
-			args[1] = Ray.new(camP, dir * 5000)
+			args[1] = Ray.new(camP, dir * 1000)
 			return old(self, table.unpack(args))
 		end
+
 		return old(self, ...)
 	end)
 end
 pcall(HookNamecall)
 
-local function TickSilentAim()
-	if not CONFIG.SilentAim then return end
-	local bone = GetBestTarget()
-	if not (bone and bone.Parent) then return end
-	local camP    = Camera.CFrame.Position
-	local dir     = (bone.Position - camP).Unit
-	local targetCF = CFrame.new(camP, camP + dir)
-	local smooth   = math.clamp(CONFIG.Smoothness, 1, 30)
-	Camera.CFrame  = Camera.CFrame:Lerp(targetCF, 1 / smooth)
-end
-
+-- ── FAST RUN ──────────────────────────────────────────────────────────────────
 local wsConn = nil
 local function ApplyWS()
 	local _, _, hum = GetChar()
@@ -137,6 +161,7 @@ local function StartFastRun()
 	end
 end
 
+-- ── INFINITE JUMP ─────────────────────────────────────────────────────────────
 local jpConn = nil
 local ijConn = nil
 local function ApplyJP()
@@ -169,6 +194,7 @@ local function StartInfiniteJump()
 	end)
 end
 
+-- ── ESP DRAWING ───────────────────────────────────────────────────────────────
 local function NewText(size, color)
 	local t = Drawing.new("Text")
 	t.Size = size or 13; t.Center = true; t.Outline = true
@@ -197,32 +223,52 @@ end
 
 local fovCircle = Drawing.new("Circle")
 fovCircle.Thickness = 1.2
-fovCircle.Color = Color3.fromRGB(255,255,255)
-fovCircle.Filled = false
-fovCircle.Radius = CONFIG.SilentFOV
-fovCircle.Visible = false
-fovCircle.Position = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)
+fovCircle.Color     = Color3.fromRGB(255,255,255)
+fovCircle.Filled    = false
+fovCircle.Radius    = CONFIG.SilentFOV
+fovCircle.Visible   = false
+fovCircle.Position  = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)
+
+local BONES_R15 = {
+	{"Head","UpperTorso"},{"UpperTorso","LowerTorso"},
+	{"LowerTorso","LeftUpperLeg"},{"LowerTorso","RightUpperLeg"},
+	{"LeftUpperLeg","LeftLowerLeg"},{"RightUpperLeg","RightLowerLeg"},
+	{"LeftLowerLeg","LeftFoot"},{"RightLowerLeg","RightFoot"},
+	{"UpperTorso","LeftUpperArm"},{"UpperTorso","RightUpperArm"},
+	{"LeftUpperArm","LeftLowerArm"},{"RightUpperArm","RightLowerArm"},
+	{"LeftLowerArm","LeftHand"},{"RightLowerArm","RightHand"},
+}
+local BONES_R6 = {
+	{"Head","Torso"},{"Torso","Left Leg"},{"Torso","Right Leg"},
+	{"Torso","Left Arm"},{"Torso","Right Arm"},
+}
+local MAX_BONES = math.max(#BONES_R15, #BONES_R6)
 
 local espData = {}
 
 local function CreateESP()
+	local bones = {}
+	for i = 1, MAX_BONES do bones[i] = NewLine(Color3.fromRGB(255,255,255), 1) end
 	return {
 		box     = NewBox(Color3.fromRGB(0,200,255), 1.5),
 		nameTag = NewText(13, Color3.fromRGB(0,200,255)),
 		distTag = NewText(11, Color3.fromRGB(200,200,200)),
 		hpBG    = NewFill(Color3.fromRGB(30,30,30)),
 		hpFill  = NewFill(Color3.fromRGB(50,220,80)),
+		bones   = bones,
 	}
 end
 
 local function RemoveESP(d)
 	d.box:Remove(); d.nameTag:Remove(); d.distTag:Remove()
 	d.hpBG:Remove(); d.hpFill:Remove()
+	for _, l in ipairs(d.bones) do l:Remove() end
 end
 
 local function HideESP(d)
 	d.box.Visible = false; d.nameTag.Visible = false
 	d.distTag.Visible = false; d.hpBG.Visible = false; d.hpFill.Visible = false
+	for _, l in ipairs(d.bones) do l.Visible = false end
 end
 
 local function GetFootPos(char)
@@ -230,119 +276,110 @@ local function GetFootPos(char)
 	if isR15 then
 		local lf = char:FindFirstChild("LeftFoot")
 		local rf = char:FindFirstChild("RightFoot")
-		if lf and rf then return lf.Position.Y < rf.Position.Y and lf.Position or rf.Position end
+		if lf and rf then
+			return lf.Position.Y < rf.Position.Y and lf.Position or rf.Position
+		end
 		local lt = char:FindFirstChild("LowerTorso")
 		return lt and (lt.Position - Vector3.new(0,1.2,0)) or Vector3.new(0,0,0)
 	else
 		local ll = char:FindFirstChild("Left Leg")
 		local rl = char:FindFirstChild("Right Leg")
-		if ll and rl then return ll.Position.Y < rl.Position.Y and ll.Position or rl.Position end
+		if ll and rl then
+			return ll.Position.Y < rl.Position.Y and ll.Position or rl.Position
+		end
 		local t = char:FindFirstChild("Torso")
 		return t and (t.Position - Vector3.new(0,2,0)) or Vector3.new(0,0,0)
 	end
 end
 
-local enemyLines = {}
-
-local function GetOrCreateEnemyLine(mob)
-	if not enemyLines[mob] then
-		enemyLines[mob] = NewLine(Color3.fromRGB(255,50,50), 1.2)
-	end
-	return enemyLines[mob]
-end
-
-local function CleanDeadEnemyLines()
-	for mob, line in pairs(enemyLines) do
-		if not mob or not mob.Parent then
-			line:Remove()
-			enemyLines[mob] = nil
-		end
-	end
-end
-
-local function UpdateEnemyLines()
-	CleanDeadEnemyLines()
-	if not CONFIG.EnemyLineESP then
-		for _, line in pairs(enemyLines) do line.Visible = false end
-		return
-	end
-	local vp     = Camera.ViewportSize
-	local center = Vector2.new(vp.X / 2, vp.Y)
-	local folder = Workspace:FindFirstChild("Enemies")
-	local activeThisFrame = {}
-	if folder then
-		for _, mob in ipairs(folder:GetChildren()) do
-			local mr  = mob:FindFirstChild("HumanoidRootPart")
-			local hum = mob:FindFirstChildOfClass("Humanoid")
-			if not (mr and hum and hum.Health > 0) then continue end
-			local sc, on = Camera:WorldToViewportPoint(mr.Position)
-			if not (on or sc.Z > 0) then continue end
-			local line = GetOrCreateEnemyLine(mob)
-			line.From    = center
-			line.To      = Vector2.new(sc.X, sc.Y)
-			line.Visible = true
-			activeThisFrame[mob] = true
-		end
-	end
-	for mob, line in pairs(enemyLines) do
-		if not activeThisFrame[mob] then line.Visible = false end
-	end
-end
-
 local function UpdateESP()
-	local myChar, myRoot = GetChar()
+	local _, myRoot = GetChar()
+
 	for plr, d in pairs(espData) do
 		if not plr or not plr.Parent then RemoveESP(d); espData[plr] = nil end
 	end
 	for _, plr in ipairs(Players:GetPlayers()) do
 		if plr ~= LP and not espData[plr] then espData[plr] = CreateESP() end
 	end
+
 	for plr, d in pairs(espData) do
-		if not CONFIG.PlayerESP then HideESP(d); continue end
+		if not CONFIG.PlayerESP and not CONFIG.SkeletonESP then HideESP(d); continue end
 		if not plr.Character then HideESP(d); continue end
 		local char = plr.Character
 		local root = char:FindFirstChild("HumanoidRootPart")
 		local hum  = char:FindFirstChildOfClass("Humanoid")
 		local head = char:FindFirstChild("Head")
 		if not root or not hum or not head then HideESP(d); continue end
+
 		local dist = myRoot and math.floor((root.Position - myRoot.Position).Magnitude) or 0
 		if dist > 600 then HideESP(d); continue end
+
 		local headTop = head.Position + Vector3.new(0, head.Size.Y / 2, 0)
 		local footPos = GetFootPos(char)
 		local scHead, onHead = Camera:WorldToViewportPoint(headTop)
 		local scFoot, onFoot = Camera:WorldToViewportPoint(footPos)
 		if not onHead or not onFoot then HideESP(d); continue end
+
 		local topY    = math.min(scHead.Y, scFoot.Y)
 		local bottomY = math.max(scHead.Y, scFoot.Y)
 		local boxH    = math.max(bottomY - topY, 10)
 		local boxW    = boxH * 0.5
 		local boxX    = scHead.X - boxW / 2
-		local scale   = math.clamp(1 - dist/600, 0.3, 1)
-		local tsz     = math.floor(10*scale + 3)
-		d.box.Size     = Vector2.new(boxW, boxH)
-		d.box.Position = Vector2.new(boxX, topY)
-		d.box.Visible  = true
-		d.nameTag.Text     = plr.DisplayName
-		d.nameTag.Size     = tsz
-		d.nameTag.Position = Vector2.new(scHead.X, topY - tsz - 2)
-		d.nameTag.Visible  = true
-		d.distTag.Text     = dist .. "m"
-		d.distTag.Size     = math.max(tsz - 2, 9)
-		d.distTag.Position = Vector2.new(scHead.X, bottomY + 2)
-		d.distTag.Visible  = true
-		local hpPct = math.clamp(hum.Health / math.max(hum.MaxHealth, 1), 0, 1)
-		local barX  = boxX - 5
-		d.hpBG.Size     = Vector2.new(3, boxH)
-		d.hpBG.Position = Vector2.new(barX, topY)
-		d.hpBG.Visible  = true
-		local fh = math.max(math.floor(boxH * hpPct), 1)
-		d.hpFill.Color    = Color3.fromRGB(math.floor(255*(1-hpPct)), math.floor(220*hpPct), 50)
-		d.hpFill.Size     = Vector2.new(3, fh)
-		d.hpFill.Position = Vector2.new(barX, topY + boxH - fh)
-		d.hpFill.Visible  = true
+
+		if CONFIG.PlayerESP then
+			local scale = math.clamp(1 - dist/600, 0.3, 1)
+			local tsz   = math.floor(10*scale + 3)
+			d.box.Size     = Vector2.new(boxW, boxH)
+			d.box.Position = Vector2.new(boxX, topY)
+			d.box.Visible  = true
+			d.nameTag.Text     = plr.DisplayName
+			d.nameTag.Size     = tsz
+			d.nameTag.Position = Vector2.new(scHead.X, topY - tsz - 2)
+			d.nameTag.Visible  = true
+			d.distTag.Text     = dist .. "m"
+			d.distTag.Size     = math.max(tsz - 2, 9)
+			d.distTag.Position = Vector2.new(scHead.X, bottomY + 2)
+			d.distTag.Visible  = true
+			local hpPct = math.clamp(hum.Health / math.max(hum.MaxHealth, 1), 0, 1)
+			local barX  = boxX - 5
+			d.hpBG.Size     = Vector2.new(3, boxH)
+			d.hpBG.Position = Vector2.new(barX, topY)
+			d.hpBG.Visible  = true
+			local fh = math.max(math.floor(boxH * hpPct), 1)
+			d.hpFill.Color    = Color3.fromRGB(math.floor(255*(1-hpPct)), math.floor(220*hpPct), 50)
+			d.hpFill.Size     = Vector2.new(3, fh)
+			d.hpFill.Position = Vector2.new(barX, topY + boxH - fh)
+			d.hpFill.Visible  = true
+		else
+			d.box.Visible = false; d.nameTag.Visible = false
+			d.distTag.Visible = false; d.hpBG.Visible = false; d.hpFill.Visible = false
+		end
+
+		if CONFIG.SkeletonESP then
+			local isR15     = char:FindFirstChild("UpperTorso") ~= nil
+			local bonePairs = isR15 and BONES_R15 or BONES_R6
+			for i, pair in ipairs(bonePairs) do
+				local pA = char:FindFirstChild(pair[1])
+				local pB = char:FindFirstChild(pair[2])
+				local ln = d.bones[i]
+				if pA and pB then
+					local sA, onA = Camera:WorldToViewportPoint(pA.Position)
+					local sB, onB = Camera:WorldToViewportPoint(pB.Position)
+					if onA and onB then
+						ln.From = Vector2.new(sA.X, sA.Y)
+						ln.To   = Vector2.new(sB.X, sB.Y)
+						ln.Visible = true
+					else ln.Visible = false end
+				else ln.Visible = false end
+			end
+			for i = #bonePairs + 1, MAX_BONES do d.bones[i].Visible = false end
+		else
+			for _, l in ipairs(d.bones) do l.Visible = false end
+		end
 	end
 end
 
+-- ── GUI ───────────────────────────────────────────────────────────────────────
 local sg = Instance.new("ScreenGui")
 sg.Name = "Ontoy_HS"; sg.ResetOnSpawn = false
 sg.Parent = LP:WaitForChild("PlayerGui")
@@ -629,6 +666,7 @@ local function BoneCycle(parent)
 	end)
 end
 
+-- ── BUILD PAGES ───────────────────────────────────────────────────────────────
 local pgCombat = MakePage(); pages["combat"]   = pgCombat
 local pgMove   = MakePage(); pages["movement"] = pgMove
 local pgESP    = MakePage(); pages["esp"]      = pgESP
@@ -637,14 +675,12 @@ local sbCombat = MakeSideBtn("🎯","Combat",   "combat")
 local sbMove   = MakeSideBtn("🏃","Movement", "movement")
 local sbESP    = MakeSideBtn("👁","ESP",       "esp")
 
-SecLabel(pgCombat, "SILENT AIM")
-local _, saGet, _ = Toggle(pgCombat, "Silent Aim", "Namecall hook: Fire/FireServer/Raycast", C.Red)
+SecLabel(pgCombat, "SILENT HIT")
+local _, saGet, _ = Toggle(pgCombat, "Silent Hit",
+	"Namecall redirect — kamera bebas, peluru nempel", C.Red)
 BoneCycle(pgCombat)
-Slider(pgCombat, "FOV Radius", 30, 400, (CONFIG.SilentFOV-30)/370, " px", function(v)
+Slider(pgCombat, "FOV Radius", 5, 400, (CONFIG.SilentFOV-5)/395, " px", function(v)
 	CONFIG.SilentFOV = v; fovCircle.Radius = v
-end)
-Slider(pgCombat, "Smoothness", 1, 30, 0, "", function(v)
-	CONFIG.Smoothness = v
 end)
 
 SecLabel(pgMove, "WALK SPEED")
@@ -661,10 +697,11 @@ Slider(pgMove, "Jump Power", 50, 300, (CONFIG.JumpPower-50)/250, "", function(v)
 end)
 
 SecLabel(pgESP, "PLAYER ESP")
-local _, peGet, _ = Toggle(pgESP, "Player ESP",    "Box + nama + HP — foot-to-head anchor")
-SecLabel(pgESP, "ENEMY ESP")
-local _, elGet, _ = Toggle(pgESP, "Enemy Lines",   "Garis merah ke workspace.Enemies", C.Red)
+local _, peGet, _ = Toggle(pgESP, "Player ESP",   "Box + nama + HP — foot-to-head anchor")
+SecLabel(pgESP, "SKELETON ESP")
+local _, seGet, _ = Toggle(pgESP, "Skeleton ESP", "Garis tulang — R15 + R6")
 
+-- ── WIRE ──────────────────────────────────────────────────────────────────────
 local function Wire(getter, key, onOn, onOff)
 	RunService.Heartbeat:Connect(function()
 		local s = getter()
@@ -677,10 +714,10 @@ local function Wire(getter, key, onOn, onOff)
 end
 
 Wire(saGet, "SilentAim")
-Wire(frGet, "FastRun",      StartFastRun, StartFastRun)
+Wire(frGet, "FastRun",      StartFastRun,      StartFastRun)
 Wire(ijGet, "InfiniteJump", StartInfiniteJump, StartInfiniteJump)
 Wire(peGet, "PlayerESP")
-Wire(elGet, "EnemyLineESP")
+Wire(seGet, "SkeletonESP")
 
 sbCombat.MouseButton1Click:Connect(function() SetPage("combat")   end)
 sbMove.MouseButton1Click:Connect(function()   SetPage("movement") end)
@@ -702,19 +739,18 @@ closeBtn.MouseButton1Click:Connect(function()
 	if ijConn then ijConn:Disconnect() end
 	fovCircle:Remove()
 	for _, d in pairs(espData) do RemoveESP(d) end
-	for _, line in pairs(enemyLines) do line:Remove() end
 	sg:Destroy()
 end)
 
-LP.CharacterAdded:Connect(function(char)
+LP.CharacterAdded:Connect(function()
 	task.wait(1)
-	if CONFIG.FastRun then StartFastRun() end
+	if CONFIG.FastRun     then StartFastRun()       end
 	if CONFIG.InfiniteJump then StartInfiniteJump() end
 end)
 
 local espTick = 0
 RunService.RenderStepped:Connect(function()
-	TickSilentAim()
+	-- TickSilentAim DIHAPUS — kamera tidak disentuh sama sekali
 	local vp = Camera.ViewportSize
 	fovCircle.Position = Vector2.new(vp.X/2, vp.Y/2)
 	fovCircle.Visible  = CONFIG.SilentAim
@@ -723,6 +759,5 @@ RunService.RenderStepped:Connect(function()
 	if now - espTick >= 0.05 then
 		espTick = now
 		UpdateESP()
-		UpdateEnemyLines()
 	end
 end)
