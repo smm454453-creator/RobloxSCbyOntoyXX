@@ -1,826 +1,743 @@
-local Players        = game:GetService("Players")
-local RunService     = game:GetService("RunService")
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
-local Workspace      = game:GetService("Workspace")
-local Camera         = Workspace.CurrentCamera
+local Workspace = game:GetService("Workspace")
+local Camera = Workspace.CurrentCamera
 
-local LP  = Players.LocalPlayer
-local PG  = LP:WaitForChild("PlayerGui")
+local LP = Players.LocalPlayer
 
 local function GetChar()
-	local c = LP.Character
-	if not c then return nil, nil, nil end
-	local r = c:FindFirstChild("HumanoidRootPart")
-	local h = c:FindFirstChildOfClass("Humanoid")
-	return c, r, h
+    local c = LP.Character
+    if not c then return nil, nil, nil end
+    local r = c:FindFirstChild("HumanoidRootPart")
+    local h = c:FindFirstChildOfClass("Humanoid")
+    return c, r, h
 end
 
 local CONFIG = {
-	SilentAim     = false,
-	TargetBone    = "Head",
-	SilentAimFOV  = 120,
-	NoRecoil      = false,
-	VehicleSpeed  = false,
-	VehicleSpeedVal = 300,
-	FastRun       = false,
-	WalkSpeed     = 16,
-	HighJump      = false,
-	JumpPower     = 50,
-	ESP           = false,
-	Tracers       = false,
+    SilentAim    = false,
+    TargetBone   = "Head",
+    SilentFOV    = 120,
+    FastRun      = false,
+    WalkSpeed    = 50,
+    InfiniteJump = false,
+    JumpPower    = 80,
+    PlayerESP    = false,
+    SkeletonESP  = false,
 }
 
--- ============================================================
--- SILENT AIM: hook universal di __namecall
--- Cover: Fire, FireServer, Raycast, FindPartOnRay*
--- ============================================================
+-- ── SILENT AIM — namecall hook (sistem jailbreak) ────────────────────────────
 local function GetBestTarget()
-	local vp   = Camera.ViewportSize
-	local cx   = vp.X / 2
-	local cy   = vp.Y / 2
-	local fov  = CONFIG.SilentAimFOV
-	local best, bestD = nil, math.huge
-	for _, p in ipairs(Players:GetPlayers()) do
-		if p == LP then continue end
-		local pc = p.Character
-		if not pc then continue end
-		local bone = pc:FindFirstChild(CONFIG.TargetBone) or pc:FindFirstChild("HumanoidRootPart")
-		local hum  = pc:FindFirstChildOfClass("Humanoid")
-		if not (bone and hum and hum.Health > 0) then continue end
-		local sc, on = Camera:WorldToViewportPoint(bone.Position)
-		if not on then continue end
-		local d = math.sqrt((sc.X-cx)^2 + (sc.Y-cy)^2)
-		if d < fov and d < bestD then bestD = d; best = bone end
-	end
-	return best
+    local vp = Camera.ViewportSize
+    local cx, cy = vp.X / 2, vp.Y / 2
+    local best, bestD = nil, math.huge
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p == LP then continue end
+        local pc = p.Character; if not pc then continue end
+        local bone = pc:FindFirstChild(CONFIG.TargetBone)
+            or pc:FindFirstChild("HumanoidRootPart")
+        local hum = pc:FindFirstChildOfClass("Humanoid")
+        if not (bone and hum and hum.Health > 0) then continue end
+        local sc, on = Camera:WorldToViewportPoint(bone.Position)
+        if not on then continue end
+        local d = math.sqrt((sc.X - cx)^2 + (sc.Y - cy)^2)
+        if d < CONFIG.SilentFOV and d < bestD then
+            bestD = d; best = bone
+        end
+    end
+    return best
 end
 
-local hooked = false
+local namecallHooked = false
 local function HookNamecall()
-	if hooked then return end
-	hooked = true
-	local old
-	old = hookmetamethod(game, "__namecall", function(self, ...)
-		if not CONFIG.SilentAim then return old(self, ...) end
-		local m    = getnamecallmethod()
-		local bone = GetBestTarget()
-		if not (bone and bone.Parent) then return old(self, ...) end
+    if namecallHooked then return end
+    namecallHooked = true
+    local old
+    old = hookmetamethod(game, "__namecall", function(self, ...)
+        if not CONFIG.SilentAim then return old(self, ...) end
+        local m    = getnamecallmethod()
+        local bone = GetBestTarget()
+        if not (bone and bone.Parent) then return old(self, ...) end
 
-		local bPos = bone.Position
-		local camP = Camera.CFrame.Position
-		local dir  = (bPos - camP).Unit
+        local bPos = bone.Position
+        local camP = Camera.CFrame.Position
+        local dir  = (bPos - camP).Unit
 
-		-- FireServer / InvokeServer: ganti BasePart, Ray, CFrame, Vector3 arg ke target
-		if m == "FireServer" or m == "InvokeServer" or m == "Fire" then
-			local args = {...}
-			for i, v in ipairs(args) do
-				if typeof(v) == "Instance" and v:IsA("BasePart") then
-					args[i] = bone
-				elseif typeof(v) == "Ray" then
-					args[i] = Ray.new(camP, dir * 1000)
-				elseif typeof(v) == "CFrame" then
-					args[i] = CFrame.new(bPos)
-				elseif typeof(v) == "Vector3" then
-					args[i] = bPos
-				end
-			end
-			return old(self, table.unpack(args))
-		end
+        if m == "FireServer" or m == "InvokeServer" or m == "Fire" then
+            local args = {...}
+            for i, v in ipairs(args) do
+                if typeof(v) == "Instance" and v:IsA("BasePart") then
+                    args[i] = bone
+                elseif typeof(v) == "Ray" then
+                    args[i] = Ray.new(camP, dir * 1000)
+                elseif typeof(v) == "CFrame" then
+                    args[i] = CFrame.new(bPos)
+                elseif typeof(v) == "Vector3" then
+                    args[i] = bPos
+                end
+            end
+            return old(self, table.unpack(args))
+        end
 
-		-- Workspace:Raycast
-		if m == "Raycast" and self == Workspace then
-			return old(self, camP, dir * 1000, select(3, ...))
-		end
+        if m == "Raycast" and self == Workspace then
+            return old(self, camP, dir * 1000, select(3, ...))
+        end
 
-		-- FindPartOnRay / FindPartOnRayWithIgnoreList / FindPartOnRayWithWhitelist
-		if m == "FindPartOnRay"
-		or m == "FindPartOnRayWithIgnoreList"
-		or m == "FindPartOnRayWithWhitelist" then
-			local args = {...}
-			args[1] = Ray.new(camP, dir * 1000)
-			return old(self, table.unpack(args))
-		end
+        if m == "FindPartOnRay"
+        or m == "FindPartOnRayWithIgnoreList"
+        or m == "FindPartOnRayWithWhitelist" then
+            local args = {...}
+            args[1] = Ray.new(camP, dir * 1000)
+            return old(self, table.unpack(args))
+        end
 
-		return old(self, ...)
-	end)
+        return old(self, ...)
+    end)
 end
 pcall(HookNamecall)
 
--- Camera lock ke target saat SilentAim aktif
 local function TickSilentAim()
-	if not CONFIG.SilentAim then return end
-	local bone = GetBestTarget()
-	if not (bone and bone.Parent) then return end
-	local camP = Camera.CFrame.Position
-	local dir  = (bone.Position - camP).Unit
-	Camera.CFrame = CFrame.new(camP, camP + dir)
+    if not CONFIG.SilentAim then return end
+    local bone = GetBestTarget()
+    if not (bone and bone.Parent) then return end
+    local camP = Camera.CFrame.Position
+    local dir  = (bone.Position - camP).Unit
+    Camera.CFrame = CFrame.new(camP, camP + dir)
 end
 
--- ============================================================
--- AUTO ESCAPE: direct CFrame ke luar gerbang Police Station
--- ============================================================
-local POLICE_GATE = CFrame.new(-1135, 18, -1370)
-
-local function DoEscape()
-	local _, root, hum = GetChar()
-	if not (root and hum and hum.Health > 0) then return end
-	root.CFrame = POLICE_GATE
-end
-
--- ============================================================
--- VEHICLE SPEED: physics pusher ke PrimaryPart kendaraan yg ditempati
--- ============================================================
-local wHeld = false
-UserInputService.InputBegan:Connect(function(inp, gp)
-	if gp then return end
-	if inp.KeyCode == Enum.KeyCode.W then wHeld = true end
-end)
-UserInputService.InputEnded:Connect(function(inp)
-	if inp.KeyCode == Enum.KeyCode.W then wHeld = false end
-end)
-
-local function GetOccupiedVehicle()
-	local _, _, hum = GetChar()
-	if not hum then return nil, nil end
-	local seat = hum.SeatPart
-	if not (seat and seat:IsA("VehicleSeat")) then return nil, nil end
-	-- cari di Workspace.Vehicles jika ada, fallback ke seat.Parent
-	local car = seat.Parent
-	local primary = (car and car.PrimaryPart) or seat
-	return seat, primary
-end
-
-RunService.Heartbeat:Connect(function()
-	if not (CONFIG.VehicleSpeed and wHeld) then return end
-	local seat, primary = GetOccupiedVehicle()
-	if not (seat and primary) then return end
-	pcall(function()
-		primary.AssemblyLinearVelocity = primary.CFrame.LookVector * CONFIG.VehicleSpeedVal
-	end)
-end)
-
--- ============================================================
--- FAST RUN: GetPropertyChangedSignal reset-proof
--- ============================================================
+-- ── FAST RUN — GetPropertyChangedSignal reset-proof ──────────────────────────
 local wsConn = nil
 local function ApplyWS()
-	local _, _, hum = GetChar()
-	if hum then pcall(function() hum.WalkSpeed = CONFIG.WalkSpeed end) end
+    local _, _, hum = GetChar()
+    if hum then pcall(function() hum.WalkSpeed = CONFIG.WalkSpeed end) end
 end
 local function StartFastRun()
-	if wsConn then wsConn:Disconnect() wsConn = nil end
-	if not CONFIG.FastRun then ApplyWS() return end
-	ApplyWS()
-	local _, _, hum = GetChar()
-	if hum then
-		wsConn = hum:GetPropertyChangedSignal("WalkSpeed"):Connect(function()
-			if CONFIG.FastRun then task.defer(ApplyWS) end
-		end)
-	end
+    if wsConn then wsConn:Disconnect(); wsConn = nil end
+    if not CONFIG.FastRun then
+        local _, _, hum = GetChar()
+        if hum then pcall(function() hum.WalkSpeed = 16 end) end
+        return
+    end
+    ApplyWS()
+    local _, _, hum = GetChar()
+    if hum then
+        wsConn = hum:GetPropertyChangedSignal("WalkSpeed"):Connect(function()
+            if CONFIG.FastRun then task.defer(ApplyWS) end
+        end)
+    end
 end
 
--- ============================================================
--- HIGH JUMP: JumpPower lock + fall damage guard (velocity cap Y)
--- ============================================================
+-- ── INFINITE JUMP — JumpPower lock + repeat on JumpRequest ───────────────────
+-- Sama seperti jailbreak HighJump tapi trigger on JumpRequest tiap frame
 local jpConn   = nil
-local fallConn = nil
+local ijConn   = nil
 local function ApplyJP()
-	local _, _, hum = GetChar()
-	if not hum then return end
-	pcall(function()
-		hum.UseJumpPower = true
-		hum.JumpPower    = CONFIG.JumpPower
-	end)
+    local _, _, hum = GetChar()
+    if not hum then return end
+    pcall(function()
+        hum.UseJumpPower = true
+        hum.JumpPower    = CONFIG.JumpPower
+    end)
 end
-local function StartHighJump()
-	if jpConn   then jpConn:Disconnect()   jpConn   = nil end
-	if fallConn then fallConn:Disconnect() fallConn = nil end
-	if not CONFIG.HighJump then ApplyJP() return end
-	ApplyJP()
-	local _, _, hum = GetChar()
-	if hum then
-		jpConn = hum:GetPropertyChangedSignal("JumpPower"):Connect(function()
-			if CONFIG.HighJump then task.defer(ApplyJP) end
-		end)
-	end
-	-- fall damage guard: cap downward velocity agar tidak mati
-	fallConn = RunService.Heartbeat:Connect(function()
-		if not CONFIG.HighJump then return end
-		local _, root = GetChar()
-		if not root then return end
-		local vel = root.AssemblyLinearVelocity
-		if vel.Y < -80 then
-			pcall(function()
-				root.AssemblyLinearVelocity = Vector3.new(vel.X, -80, vel.Z)
-			end)
-		end
-	end)
-end
-
--- ============================================================
--- ESP: Highlight + Drawing distance label
--- ============================================================
-local ESP_HL  = {}
-local ESP_LBL = {}
-local ESP_TR  = {}
-
-local function ESPColor(p)
-	local t = string.lower(p.Team and p.Team.Name or "")
-	if t:find("police") then return Color3.fromRGB(50,100,255), Color3.fromRGB(0,40,180) end
-	if t:find("crim")   then return Color3.fromRGB(255,50,50),  Color3.fromRGB(140,0,0)  end
-	return Color3.fromRGB(200,200,200), Color3.fromRGB(80,80,80)
+local function StartInfiniteJump()
+    if jpConn then jpConn:Disconnect(); jpConn = nil end
+    if ijConn then ijConn:Disconnect(); ijConn = nil end
+    if not CONFIG.InfiniteJump then
+        local _, _, hum = GetChar()
+        if hum then pcall(function() hum.JumpPower = 50 end) end
+        return
+    end
+    ApplyJP()
+    local _, _, hum = GetChar()
+    if hum then
+        jpConn = hum:GetPropertyChangedSignal("JumpPower"):Connect(function()
+            if CONFIG.InfiniteJump then task.defer(ApplyJP) end
+        end)
+    end
+    -- Infinite jump: tiap JumpRequest, set state jumping lagi
+    ijConn = UserInputService.JumpRequest:Connect(function()
+        if not CONFIG.InfiniteJump then return end
+        local _, _, hum2 = GetChar()
+        if hum2 then
+            hum2:ChangeState(Enum.HumanoidStateType.Jumping)
+        end
+    end)
 end
 
-local function MakeHL(p)
-	if ESP_HL[p] then return end
-	local pc = p.Character; if not pc then return end
-	local fill, out = ESPColor(p)
-	local hl = Instance.new("Highlight")
-	hl.FillColor = fill; hl.OutlineColor = out
-	hl.FillTransparency = 0.5; hl.OutlineTransparency = 0
-	hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-	hl.Adornee = pc; hl.Parent = pc
-	ESP_HL[p] = hl
-	if not ESP_LBL[p] then
-		local lbl = Drawing.new("Text")
-		lbl.Size = 13; lbl.Center = true
-		lbl.Outline = true; lbl.OutlineColor = Color3.new(0,0,0)
-		lbl.Visible = false
-		ESP_LBL[p] = lbl
-	end
+-- ── ESP DRAWING ───────────────────────────────────────────────────────────────
+local function NewText(size, color)
+    local t = Drawing.new("Text")
+    t.Size = size or 13; t.Center = true; t.Outline = true
+    t.OutlineColor = Color3.fromRGB(0,0,0)
+    t.Color = color or Color3.fromRGB(255,255,255)
+    t.Visible = false; t.Font = Drawing.Fonts.Plex
+    return t
+end
+local function NewBox(color, thick)
+    local b = Drawing.new("Square")
+    b.Thickness = thick or 1.5; b.Filled = false
+    b.Color = color or Color3.fromRGB(255,255,255); b.Visible = false
+    return b
+end
+local function NewLine(color, thick)
+    local l = Drawing.new("Line")
+    l.Thickness = thick or 1
+    l.Color = color or Color3.fromRGB(255,255,255); l.Visible = false
+    return l
+end
+local function NewFill(color)
+    local f = Drawing.new("Square"); f.Filled = true
+    f.Color = color or Color3.fromRGB(30,30,30); f.Visible = false
+    return f
 end
 
-local function RemoveHL(p)
-	if ESP_HL[p]  then pcall(function() ESP_HL[p]:Destroy() end); ESP_HL[p] = nil end
-	if ESP_LBL[p] then ESP_LBL[p]:Remove(); ESP_LBL[p] = nil end
-	if ESP_TR[p]  then ESP_TR[p]:Remove();  ESP_TR[p]  = nil end
+local fovCircle = Drawing.new("Circle")
+fovCircle.Thickness = 1.2
+fovCircle.Color = Color3.fromRGB(255,255,255)
+fovCircle.Filled = false
+fovCircle.Radius = CONFIG.SilentFOV
+fovCircle.Visible = false
+fovCircle.Position = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)
+
+local BONES_R15 = {
+    {"Head","UpperTorso"},{"UpperTorso","LowerTorso"},
+    {"LowerTorso","LeftUpperLeg"},{"LowerTorso","RightUpperLeg"},
+    {"LeftUpperLeg","LeftLowerLeg"},{"RightUpperLeg","RightLowerLeg"},
+    {"LeftLowerLeg","LeftFoot"},{"RightLowerLeg","RightFoot"},
+    {"UpperTorso","LeftUpperArm"},{"UpperTorso","RightUpperArm"},
+    {"LeftUpperArm","LeftLowerArm"},{"RightUpperArm","RightLowerArm"},
+    {"LeftLowerArm","LeftHand"},{"RightLowerArm","RightHand"},
+}
+local BONES_R6 = {
+    {"Head","Torso"},{"Torso","Left Leg"},{"Torso","Right Leg"},
+    {"Torso","Left Arm"},{"Torso","Right Arm"},
+}
+local MAX_BONES = math.max(#BONES_R15, #BONES_R6)
+
+local espData = {}
+
+local function CreateESP()
+    local bones = {}
+    for i = 1, MAX_BONES do bones[i] = NewLine(Color3.fromRGB(255,255,255), 1) end
+    return {
+        box     = NewBox(Color3.fromRGB(0,200,255), 1.5),
+        nameTag = NewText(13, Color3.fromRGB(0,200,255)),
+        distTag = NewText(11, Color3.fromRGB(200,200,200)),
+        hpBG    = NewFill(Color3.fromRGB(30,30,30)),
+        hpFill  = NewFill(Color3.fromRGB(50,220,80)),
+        bones   = bones,
+    }
+end
+
+local function RemoveESP(d)
+    d.box:Remove(); d.nameTag:Remove(); d.distTag:Remove()
+    d.hpBG:Remove(); d.hpFill:Remove()
+    for _, l in ipairs(d.bones) do l:Remove() end
+end
+
+local function HideESP(d)
+    d.box.Visible = false; d.nameTag.Visible = false
+    d.distTag.Visible = false; d.hpBG.Visible = false; d.hpFill.Visible = false
+    for _, l in ipairs(d.bones) do l.Visible = false end
+end
+
+local function GetFootPos(char)
+    local isR15 = char:FindFirstChild("UpperTorso") ~= nil
+    if isR15 then
+        local lf = char:FindFirstChild("LeftFoot")
+        local rf = char:FindFirstChild("RightFoot")
+        if lf and rf then
+            return lf.Position.Y < rf.Position.Y and lf.Position or rf.Position
+        end
+        local lt = char:FindFirstChild("LowerTorso")
+        return lt and (lt.Position - Vector3.new(0,1.2,0)) or Vector3.new(0,0,0)
+    else
+        local ll = char:FindFirstChild("Left Leg")
+        local rl = char:FindFirstChild("Right Leg")
+        if ll and rl then
+            return ll.Position.Y < rl.Position.Y and ll.Position or rl.Position
+        end
+        local t = char:FindFirstChild("Torso")
+        return t and (t.Position - Vector3.new(0,2,0)) or Vector3.new(0,0,0)
+    end
 end
 
 local function UpdateESP()
-	local _, myRoot = GetChar()
-	for _, p in ipairs(Players:GetPlayers()) do
-		if p == LP then continue end
-		local pc    = p.Character
-		local proot = pc and pc:FindFirstChild("HumanoidRootPart")
-		local phum  = pc and pc:FindFirstChildOfClass("Humanoid")
-		local lbl   = ESP_LBL[p]
-		local tr    = ESP_TR[p]
-		if not (proot and phum and phum.Health > 0) then
-			if lbl then lbl.Visible = false end
-			if tr  then tr.Visible  = false end
-			continue
-		end
-		local sc, on = Camera:WorldToViewportPoint(proot.Position)
-		local fill, _ = ESPColor(p)
-		if lbl then
-			if on and myRoot then
-				local dist = math.floor((myRoot.Position - proot.Position).Magnitude)
-				lbl.Position = Vector2.new(sc.X, sc.Y - 26)
-				lbl.Text     = p.Name .. " [" .. dist .. "s]"
-				lbl.Color    = fill
-				lbl.Visible  = true
-			else
-				lbl.Visible = false
-			end
-		end
-		if CONFIG.Tracers then
-			local vp = Camera.ViewportSize
-			if not tr then
-				tr = Drawing.new("Line")
-				tr.Thickness = 1
-				ESP_TR[p] = tr
-			end
-			if on then
-				tr.From    = Vector2.new(vp.X/2, vp.Y)
-				tr.To      = Vector2.new(sc.X, sc.Y)
-				tr.Color   = fill
-				tr.Visible = true
-			else
-				tr.Visible = false
-			end
-		elseif tr then
-			tr.Visible = false
-		end
-	end
+    local myChar, myRoot = GetChar()
+
+    for plr, d in pairs(espData) do
+        if not plr or not plr.Parent then
+            RemoveESP(d); espData[plr] = nil
+        end
+    end
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LP and not espData[plr] then
+            espData[plr] = CreateESP()
+        end
+    end
+
+    for plr, d in pairs(espData) do
+        if not CONFIG.PlayerESP and not CONFIG.SkeletonESP then
+            HideESP(d); continue
+        end
+        if not plr.Character then HideESP(d); continue end
+        local char = plr.Character
+        local root = char:FindFirstChild("HumanoidRootPart")
+        local hum  = char:FindFirstChildOfClass("Humanoid")
+        local head = char:FindFirstChild("Head")
+        if not root or not hum or not head then HideESP(d); continue end
+
+        local dist = myRoot and math.floor((root.Position - myRoot.Position).Magnitude) or 0
+        if dist > 600 then HideESP(d); continue end
+
+        local headTop  = head.Position + Vector3.new(0, head.Size.Y / 2, 0)
+        local footPos  = GetFootPos(char)
+        local scHead, onHead = Camera:WorldToViewportPoint(headTop)
+        local scFoot, onFoot = Camera:WorldToViewportPoint(footPos)
+        if not onHead or not onFoot then HideESP(d); continue end
+
+        local topY    = math.min(scHead.Y, scFoot.Y)
+        local bottomY = math.max(scHead.Y, scFoot.Y)
+        local boxH    = math.max(bottomY - topY, 10)
+        local boxW    = boxH * 0.5
+        local boxX    = scHead.X - boxW / 2
+
+        if CONFIG.PlayerESP then
+            local scale = math.clamp(1 - dist/600, 0.3, 1)
+            local tsz   = math.floor(10*scale + 3)
+
+            d.box.Size     = Vector2.new(boxW, boxH)
+            d.box.Position = Vector2.new(boxX, topY)
+            d.box.Visible  = true
+
+            d.nameTag.Text     = plr.DisplayName
+            d.nameTag.Size     = tsz
+            d.nameTag.Position = Vector2.new(scHead.X, topY - tsz - 2)
+            d.nameTag.Visible  = true
+
+            d.distTag.Text     = dist .. "m"
+            d.distTag.Size     = math.max(tsz - 2, 9)
+            d.distTag.Position = Vector2.new(scHead.X, bottomY + 2)
+            d.distTag.Visible  = true
+
+            local hpPct = math.clamp(hum.Health / math.max(hum.MaxHealth, 1), 0, 1)
+            local barX  = boxX - 5
+            d.hpBG.Size     = Vector2.new(3, boxH)
+            d.hpBG.Position = Vector2.new(barX, topY)
+            d.hpBG.Visible  = true
+            local fh = math.max(math.floor(boxH * hpPct), 1)
+            d.hpFill.Color    = Color3.fromRGB(math.floor(255*(1-hpPct)), math.floor(220*hpPct), 50)
+            d.hpFill.Size     = Vector2.new(3, fh)
+            d.hpFill.Position = Vector2.new(barX, topY + boxH - fh)
+            d.hpFill.Visible  = true
+        else
+            d.box.Visible = false; d.nameTag.Visible = false
+            d.distTag.Visible = false; d.hpBG.Visible = false; d.hpFill.Visible = false
+        end
+
+        if CONFIG.SkeletonESP then
+            local isR15     = char:FindFirstChild("UpperTorso") ~= nil
+            local bonePairs = isR15 and BONES_R15 or BONES_R6
+            for i, pair in ipairs(bonePairs) do
+                local pA = char:FindFirstChild(pair[1])
+                local pB = char:FindFirstChild(pair[2])
+                local ln = d.bones[i]
+                if pA and pB then
+                    local sA, onA = Camera:WorldToViewportPoint(pA.Position)
+                    local sB, onB = Camera:WorldToViewportPoint(pB.Position)
+                    if onA and onB then
+                        ln.From = Vector2.new(sA.X, sA.Y)
+                        ln.To   = Vector2.new(sB.X, sB.Y)
+                        ln.Visible = true
+                    else ln.Visible = false end
+                else ln.Visible = false end
+            end
+            for i = #bonePairs + 1, MAX_BONES do d.bones[i].Visible = false end
+        else
+            for _, l in ipairs(d.bones) do l.Visible = false end
+        end
+    end
 end
 
-Players.PlayerAdded:Connect(function(p)
-	p.CharacterAdded:Connect(function()
-		task.wait(0.5)
-		if CONFIG.ESP then MakeHL(p) end
-	end)
-end)
-Players.PlayerRemoving:Connect(RemoveHL)
-for _, p in ipairs(Players:GetPlayers()) do
-	if p ~= LP then
-		p.CharacterAdded:Connect(function()
-			task.wait(0.5)
-			if CONFIG.ESP then MakeHL(p) end
-		end)
-	end
-end
+-- ── GUI ───────────────────────────────────────────────────────────────────────
+local sg = Instance.new("ScreenGui")
+sg.Name = "Ontoy_HS"; sg.ResetOnSpawn = false
+sg.Parent = LP:WaitForChild("PlayerGui")
 
--- ============================================================
--- FOV CIRCLE
--- ============================================================
-local fovCircle       = Drawing.new("Circle")
-fovCircle.Filled      = false
-fovCircle.Thickness   = 1
-fovCircle.Color       = Color3.fromRGB(255,60,80)
-fovCircle.Visible     = false
-
--- ============================================================
--- GUI
--- ============================================================
-local REDZ = {
-	BG         = Color3.fromRGB(14,12,16),
-	BG2        = Color3.fromRGB(20,16,22),
-	Accent     = Color3.fromRGB(200,30,50),
-	AccentDim  = Color3.fromRGB(120,20,35),
-	AccentGlow = Color3.fromRGB(255,60,80),
-	TextMain   = Color3.fromRGB(240,220,225),
-	TextSub    = Color3.fromRGB(130,100,110),
-	Stroke     = Color3.fromRGB(60,30,40),
-	ToggleOff  = Color3.fromRGB(40,32,36),
-	SliderFill = Color3.fromRGB(200,30,50),
-	SliderBG   = Color3.fromRGB(35,28,32),
+local C = {
+    BG         = Color3.fromRGB(10,10,14),
+    BG2        = Color3.fromRGB(16,16,22),
+    Accent     = Color3.fromRGB(80,140,255),
+    AccentDim  = Color3.fromRGB(40,80,180),
+    AccentGlow = Color3.fromRGB(120,180,255),
+    TextMain   = Color3.fromRGB(230,235,255),
+    TextSub    = Color3.fromRGB(100,110,140),
+    Stroke     = Color3.fromRGB(40,50,80),
+    ToggleOff  = Color3.fromRGB(35,35,45),
+    SliderFill = Color3.fromRGB(80,140,255),
+    SliderBG   = Color3.fromRGB(30,32,45),
+    Red        = Color3.fromRGB(255,70,70),
 }
 
-local sg = Instance.new("ScreenGui")
-sg.Name = "OntoyJB"; sg.ResetOnSpawn = false; sg.Parent = PG
-
-local win = Instance.new("Frame", sg)
-win.Size = UDim2.new(0,580,0,420)
-win.Position = UDim2.new(0.5,-290,0.5,-210)
-win.BackgroundColor3 = REDZ.BG
-win.BorderSizePixel = 0; win.Active = true
+local win = Instance.new("Frame")
+win.Size = UDim2.new(0,500,0,420); win.Position = UDim2.new(0.5,-250,0.5,-210)
+win.BackgroundColor3 = C.BG; win.BorderSizePixel = 0
+win.Active = true; win.Draggable = false; win.Parent = sg
 Instance.new("UICorner", win).CornerRadius = UDim.new(0,10)
-local ws = Instance.new("UIStroke", win); ws.Color = REDZ.Stroke; ws.Thickness = 1.5
+local ws = Instance.new("UIStroke", win); ws.Color = C.Stroke; ws.Thickness = 1.5
 
 local titleBar = Instance.new("Frame", win)
-titleBar.Size = UDim2.new(1,0,0,42)
-titleBar.BackgroundColor3 = REDZ.BG2
+titleBar.Size = UDim2.new(1,0,0,42); titleBar.BackgroundColor3 = C.BG2
 titleBar.BorderSizePixel = 0; titleBar.Active = true
 Instance.new("UICorner", titleBar).CornerRadius = UDim.new(0,10)
 
--- drag
-local dragging, dStart, dPos = false, Vector2.zero, UDim2.new()
-titleBar.InputBegan:Connect(function(inp)
-	if inp.UserInputType == Enum.UserInputType.MouseButton1 then
-		dragging = true; dStart = Vector2.new(inp.Position.X,inp.Position.Y); dPos = win.Position
-	end
+local drag, dragM, dragP = false, Vector2.zero, UDim2.new()
+titleBar.InputBegan:Connect(function(i)
+    if i.UserInputType == Enum.UserInputType.MouseButton1 then
+        drag = true; dragM = Vector2.new(i.Position.X, i.Position.Y); dragP = win.Position
+    end
 end)
-UserInputService.InputChanged:Connect(function(inp)
-	if dragging and inp.UserInputType == Enum.UserInputType.MouseMovement then
-		local d = Vector2.new(inp.Position.X,inp.Position.Y) - dStart
-		win.Position = UDim2.new(dPos.X.Scale, dPos.X.Offset+d.X, dPos.Y.Scale, dPos.Y.Offset+d.Y)
-	end
+UserInputService.InputChanged:Connect(function(i)
+    if drag and i.UserInputType == Enum.UserInputType.MouseMovement then
+        local d = Vector2.new(i.Position.X, i.Position.Y) - dragM
+        win.Position = UDim2.new(dragP.X.Scale, dragP.X.Offset+d.X, dragP.Y.Scale, dragP.Y.Offset+d.Y)
+    end
 end)
-UserInputService.InputEnded:Connect(function(inp)
-	if inp.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false end
+UserInputService.InputEnded:Connect(function(i)
+    if i.UserInputType == Enum.UserInputType.MouseButton1 then drag = false end
 end)
 
-local acLine = Instance.new("Frame", titleBar)
-acLine.Size = UDim2.new(1,0,0,2); acLine.Position = UDim2.new(0,0,1,-2)
-acLine.BackgroundColor3 = REDZ.Accent; acLine.BorderSizePixel = 0
+local al = Instance.new("Frame", titleBar)
+al.Size = UDim2.new(1,0,0,2); al.Position = UDim2.new(0,0,1,-2)
+al.BackgroundColor3 = C.Accent; al.BorderSizePixel = 0
 
 local dot = Instance.new("Frame", titleBar)
 dot.Size = UDim2.new(0,8,0,8); dot.Position = UDim2.new(0,14,0.5,-4)
-dot.BackgroundColor3 = REDZ.AccentGlow; dot.BorderSizePixel = 0
+dot.BackgroundColor3 = C.AccentGlow; dot.BorderSizePixel = 0
 Instance.new("UICorner", dot).CornerRadius = UDim.new(0,4)
 
-local tTxt = Instance.new("TextLabel", titleBar)
-tTxt.Size = UDim2.new(1,-160,1,0); tTxt.Position = UDim2.new(0,30,0,0)
-tTxt.BackgroundTransparency = 1
-tTxt.Text = "ONTOY HUB  <font color='#C81E32'>·</font>  Jailbreak"
-tTxt.RichText = true; tTxt.TextColor3 = REDZ.TextMain
-tTxt.Font = Enum.Font.GothamBold; tTxt.TextSize = 13
-tTxt.TextXAlignment = Enum.TextXAlignment.Left
+local tl = Instance.new("TextLabel", titleBar)
+tl.Size = UDim2.new(1,-120,1,0); tl.Position = UDim2.new(0,30,0,0)
+tl.BackgroundTransparency = 1
+tl.Text = "ONTOY HUB  <font color='#507AFF'>·</font>  HyperShot"
+tl.RichText = true; tl.TextColor3 = C.TextMain
+tl.Font = Enum.Font.GothamBold; tl.TextSize = 13
+tl.TextXAlignment = Enum.TextXAlignment.Left
 
-local byL = Instance.new("TextLabel", titleBar)
-byL.Size = UDim2.new(0,80,1,0); byL.Position = UDim2.new(0,195,0,0)
-byL.BackgroundTransparency = 1; byL.Text = "by ontoy"
-byL.TextColor3 = REDZ.TextSub; byL.Font = Enum.Font.Gotham
-byL.TextSize = 11; byL.TextXAlignment = Enum.TextXAlignment.Left
+local byl = Instance.new("TextLabel", titleBar)
+byl.Size = UDim2.new(0,60,1,0); byl.Position = UDim2.new(0,260,0,0)
+byl.BackgroundTransparency = 1; byl.Text = "by ontoy"
+byl.TextColor3 = C.TextSub; byl.Font = Enum.Font.Gotham
+byl.TextSize = 11; byl.TextXAlignment = Enum.TextXAlignment.Left
 
 local function WinBtn(xOff, bg, txt)
-	local b = Instance.new("TextButton", titleBar)
-	b.Size = UDim2.new(0,26,0,26); b.Position = UDim2.new(1,xOff,0.5,-13)
-	b.BackgroundColor3 = bg; b.Text = txt
-	b.TextColor3 = Color3.new(1,1,1); b.Font = Enum.Font.GothamBold
-	b.TextSize = 11; b.BorderSizePixel = 0
-	Instance.new("UICorner", b).CornerRadius = UDim.new(0,6)
-	return b
+    local b = Instance.new("TextButton", titleBar)
+    b.Size = UDim2.new(0,26,0,26); b.Position = UDim2.new(1,xOff,0.5,-13)
+    b.BackgroundColor3 = bg; b.Text = txt; b.TextColor3 = Color3.fromRGB(255,255,255)
+    b.Font = Enum.Font.GothamBold; b.TextSize = 11; b.BorderSizePixel = 0
+    Instance.new("UICorner", b).CornerRadius = UDim.new(0,6)
+    return b
 end
-local closeBtn = WinBtn(-34, REDZ.Accent, "✕")
-local minBtn   = WinBtn(-66, REDZ.ToggleOff, "—")
+local closeBtn = WinBtn(-34, C.Red, "✕")
+local minBtn   = WinBtn(-66, C.ToggleOff, "—")
 
 local sidebar = Instance.new("Frame", win)
-sidebar.Size = UDim2.new(0,148,1,-42); sidebar.Position = UDim2.new(0,0,0,42)
-sidebar.BackgroundColor3 = REDZ.BG2; sidebar.BorderSizePixel = 0
+sidebar.Size = UDim2.new(0,130,1,-42); sidebar.Position = UDim2.new(0,0,0,42)
+sidebar.BackgroundColor3 = C.BG2; sidebar.BorderSizePixel = 0
 Instance.new("UICorner", sidebar).CornerRadius = UDim.new(0,10)
-Instance.new("UIStroke", sidebar).Color = REDZ.Stroke
+Instance.new("UIStroke", sidebar).Color = C.Stroke
 local sbl = Instance.new("UIListLayout", sidebar)
 sbl.Padding = UDim.new(0,3); sbl.HorizontalAlignment = Enum.HorizontalAlignment.Center
 Instance.new("UIPadding", sidebar).PaddingTop = UDim.new(0,12)
 
 local cArea = Instance.new("Frame", win)
-cArea.Size = UDim2.new(1,-156,1,-50); cArea.Position = UDim2.new(0,152,0,46)
+cArea.Size = UDim2.new(1,-138,1,-50); cArea.Position = UDim2.new(0,134,0,46)
 cArea.BackgroundTransparency = 1; cArea.BorderSizePixel = 0
 
-local cScroll = Instance.new("ScrollingFrame", cArea)
-cScroll.Size = UDim2.new(1,0,1,0); cScroll.BackgroundTransparency = 1
-cScroll.BorderSizePixel = 0; cScroll.ScrollBarThickness = 3
-cScroll.ScrollBarImageColor3 = REDZ.AccentDim
-cScroll.CanvasSize = UDim2.new(0,0,0,0)
-cScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
-local cLayout = Instance.new("UIListLayout", cScroll)
-cLayout.Padding = UDim.new(0,6); cLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
-Instance.new("UIPadding", cScroll).PaddingTop = UDim.new(0,8)
+local scroll = Instance.new("ScrollingFrame", cArea)
+scroll.Size = UDim2.new(1,0,1,0); scroll.BackgroundTransparency = 1
+scroll.BorderSizePixel = 0; scroll.ScrollBarThickness = 3
+scroll.ScrollBarImageColor3 = C.AccentDim
+scroll.CanvasSize = UDim2.new(0,0,0,0); scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+local scl = Instance.new("UIListLayout", scroll)
+scl.Padding = UDim.new(0,6); scl.HorizontalAlignment = Enum.HorizontalAlignment.Center
+Instance.new("UIPadding", scroll).PaddingTop = UDim.new(0,8)
 
-local pages   = {}
-local sideBtns= {}
+local pages, sideBtns = {}, {}
 
 local function MakePage()
-	local pg = Instance.new("Frame", cScroll)
-	pg.Size = UDim2.new(1,0,0,0); pg.AutomaticSize = Enum.AutomaticSize.Y
-	pg.BackgroundTransparency = 1; pg.BorderSizePixel = 0; pg.Visible = false
-	local l = Instance.new("UIListLayout", pg)
-	l.Padding = UDim.new(0,6); l.HorizontalAlignment = Enum.HorizontalAlignment.Center
-	Instance.new("UIPadding", pg).PaddingBottom = UDim.new(0,8)
-	return pg
+    local pg = Instance.new("Frame", scroll)
+    pg.Size = UDim2.new(1,0,0,0); pg.AutomaticSize = Enum.AutomaticSize.Y
+    pg.BackgroundTransparency = 1; pg.BorderSizePixel = 0; pg.Visible = false
+    local l = Instance.new("UIListLayout", pg)
+    l.Padding = UDim.new(0,6); l.HorizontalAlignment = Enum.HorizontalAlignment.Center
+    Instance.new("UIPadding", pg).PaddingBottom = UDim.new(0,8)
+    return pg
 end
 
 local function MakeSideBtn(icon, label, id)
-	local btn = Instance.new("TextButton", sidebar)
-	btn.Size = UDim2.new(1,-14,0,38); btn.BackgroundTransparency = 1
-	btn.Text = ""; btn.BorderSizePixel = 0
-	Instance.new("UICorner", btn).CornerRadius = UDim.new(0,7)
-	local bar = Instance.new("Frame", btn)
-	bar.Size = UDim2.new(0,3,0.6,0); bar.Position = UDim2.new(0,0,0.2,0)
-	bar.BackgroundColor3 = REDZ.Accent; bar.BorderSizePixel = 0; bar.Visible = false
-	Instance.new("UICorner", bar).CornerRadius = UDim.new(0,2)
-	local ic = Instance.new("TextLabel", btn)
-	ic.Size = UDim2.new(0,22,1,0); ic.Position = UDim2.new(0,10,0,0)
-	ic.BackgroundTransparency = 1; ic.Text = icon
-	ic.TextColor3 = REDZ.TextSub; ic.Font = Enum.Font.GothamBold; ic.TextSize = 14
-	local lb = Instance.new("TextLabel", btn)
-	lb.Size = UDim2.new(1,-38,1,0); lb.Position = UDim2.new(0,36,0,0)
-	lb.BackgroundTransparency = 1; lb.Text = label
-	lb.TextColor3 = REDZ.TextSub; lb.Font = Enum.Font.Gotham; lb.TextSize = 12
-	lb.TextXAlignment = Enum.TextXAlignment.Left
-	sideBtns[id] = {btn=btn,ic=ic,lb=lb,bar=bar}
-	return btn
+    local btn = Instance.new("TextButton", sidebar)
+    btn.Size = UDim2.new(1,-14,0,38); btn.BackgroundTransparency = 1
+    btn.Text = ""; btn.BorderSizePixel = 0
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0,7)
+    local bar = Instance.new("Frame", btn)
+    bar.Size = UDim2.new(0,3,0.6,0); bar.Position = UDim2.new(0,0,0.2,0)
+    bar.BackgroundColor3 = C.Accent; bar.BorderSizePixel = 0; bar.Visible = false
+    Instance.new("UICorner", bar).CornerRadius = UDim.new(0,2)
+    local ic = Instance.new("TextLabel", btn)
+    ic.Size = UDim2.new(0,22,1,0); ic.Position = UDim2.new(0,10,0,0)
+    ic.BackgroundTransparency = 1; ic.Text = icon
+    ic.TextColor3 = C.TextSub; ic.Font = Enum.Font.GothamBold; ic.TextSize = 14
+    local lb = Instance.new("TextLabel", btn)
+    lb.Size = UDim2.new(1,-38,1,0); lb.Position = UDim2.new(0,36,0,0)
+    lb.BackgroundTransparency = 1; lb.Text = label
+    lb.TextColor3 = C.TextSub; lb.Font = Enum.Font.Gotham; lb.TextSize = 12
+    lb.TextXAlignment = Enum.TextXAlignment.Left
+    sideBtns[id] = {btn=btn, icon=ic, label=lb, bar=bar}
+    return btn
 end
 
 local function SetPage(id)
-	for pid, pg in pairs(pages) do pg.Visible = (pid==id) end
-	for bid, sb in pairs(sideBtns) do
-		local a = (bid==id)
-		sb.btn.BackgroundTransparency = a and 0 or 1
-		sb.btn.BackgroundColor3       = a and Color3.fromRGB(30,18,22) or REDZ.ToggleOff
-		sb.ic.TextColor3              = a and REDZ.AccentGlow or REDZ.TextSub
-		sb.lb.TextColor3              = a and REDZ.TextMain   or REDZ.TextSub
-		sb.bar.Visible                = a
-	end
+    for pid, pg in pairs(pages) do pg.Visible = (pid == id) end
+    for bid, sb in pairs(sideBtns) do
+        local a = (bid == id)
+        sb.btn.BackgroundTransparency = a and 0 or 1
+        sb.btn.BackgroundColor3 = a and Color3.fromRGB(18,20,34) or C.ToggleOff
+        sb.icon.TextColor3 = a and C.AccentGlow or C.TextSub
+        sb.label.TextColor3 = a and C.TextMain or C.TextSub
+        sb.bar.Visible = a
+    end
 end
 
-local function SecLabel(parent, txt)
-	local l = Instance.new("TextLabel", parent)
-	l.Size = UDim2.new(1,-8,0,18); l.BackgroundTransparency = 1
-	l.Text = txt; l.TextColor3 = REDZ.Accent
-	l.Font = Enum.Font.GothamBold; l.TextSize = 10
-	l.TextXAlignment = Enum.TextXAlignment.Left
-	return l
+local function SecLabel(parent, text, color)
+    local l = Instance.new("TextLabel", parent)
+    l.Size = UDim2.new(1,-8,0,18); l.BackgroundTransparency = 1
+    l.Text = text; l.TextColor3 = color or C.Accent
+    l.Font = Enum.Font.GothamBold; l.TextSize = 10
+    l.TextXAlignment = Enum.TextXAlignment.Left
 end
 
-local function Toggle(parent, label, sub)
-	local row = Instance.new("Frame", parent)
-	row.Size = UDim2.new(1,-8,0,52); row.BackgroundColor3 = REDZ.BG2; row.BorderSizePixel = 0
-	Instance.new("UICorner", row).CornerRadius = UDim.new(0,8)
-	local sk = Instance.new("UIStroke", row); sk.Color = REDZ.Stroke; sk.Thickness = 1
-	local tl = Instance.new("TextLabel", row)
-	tl.Size = UDim2.new(1,-60,0,22); tl.Position = UDim2.new(0,14,0,8)
-	tl.BackgroundTransparency = 1; tl.Text = label
-	tl.TextColor3 = REDZ.TextMain; tl.Font = Enum.Font.GothamBold; tl.TextSize = 12
-	tl.TextXAlignment = Enum.TextXAlignment.Left
-	if sub then
-		local sl = Instance.new("TextLabel", row)
-		sl.Size = UDim2.new(1,-60,0,16); sl.Position = UDim2.new(0,14,0,28)
-		sl.BackgroundTransparency = 1; sl.Text = sub
-		sl.TextColor3 = REDZ.TextSub; sl.Font = Enum.Font.Gotham; sl.TextSize = 10
-		sl.TextXAlignment = Enum.TextXAlignment.Left
-	end
-	local tbg = Instance.new("Frame", row)
-	tbg.Size = UDim2.new(0,36,0,20); tbg.Position = UDim2.new(1,-48,0.5,-10)
-	tbg.BackgroundColor3 = REDZ.ToggleOff; tbg.BorderSizePixel = 0
-	Instance.new("UICorner", tbg).CornerRadius = UDim.new(0,10)
-	local knob = Instance.new("Frame", tbg)
-	knob.Size = UDim2.new(0,14,0,14); knob.Position = UDim2.new(0,3,0.5,-7)
-	knob.BackgroundColor3 = REDZ.TextSub; knob.BorderSizePixel = 0
-	Instance.new("UICorner", knob).CornerRadius = UDim.new(0,7)
-	local tb = Instance.new("TextButton", tbg)
-	tb.Size = UDim2.new(1,8,1,8); tb.Position = UDim2.new(0,-4,0,-4)
-	tb.BackgroundTransparency = 1; tb.Text = ""; tb.BorderSizePixel = 0
-	local state = false
-	local function Set(s)
-		state = s
-		tbg.BackgroundColor3 = s and REDZ.Accent or REDZ.ToggleOff
-		knob.BackgroundColor3 = s and Color3.new(1,1,1) or REDZ.TextSub
-		knob.Position = s and UDim2.new(1,-17,0.5,-7) or UDim2.new(0,3,0.5,-7)
-		row.BackgroundColor3 = s and Color3.fromRGB(24,14,18) or REDZ.BG2
-		sk.Color = s and REDZ.AccentDim or REDZ.Stroke
-	end
-	tb.MouseButton1Click:Connect(function() Set(not state) end)
-	return row, function() return state end, Set
+local function Toggle(parent, label, sub, ac)
+    ac = ac or C.Accent
+    local row = Instance.new("Frame", parent)
+    row.Size = UDim2.new(1,-8,0,52); row.BackgroundColor3 = C.BG2; row.BorderSizePixel = 0
+    Instance.new("UICorner", row).CornerRadius = UDim.new(0,8)
+    local stroke = Instance.new("UIStroke", row); stroke.Color = C.Stroke; stroke.Thickness = 1
+    local tll = Instance.new("TextLabel", row)
+    tll.Size = UDim2.new(1,-60,0,22); tll.Position = UDim2.new(0,14,0,8)
+    tll.BackgroundTransparency = 1; tll.Text = label; tll.TextColor3 = C.TextMain
+    tll.Font = Enum.Font.GothamBold; tll.TextSize = 12; tll.TextXAlignment = Enum.TextXAlignment.Left
+    if sub then
+        local s = Instance.new("TextLabel", row)
+        s.Size = UDim2.new(1,-60,0,16); s.Position = UDim2.new(0,14,0,28)
+        s.BackgroundTransparency = 1; s.Text = sub; s.TextColor3 = C.TextSub
+        s.Font = Enum.Font.Gotham; s.TextSize = 10; s.TextXAlignment = Enum.TextXAlignment.Left
+    end
+    local bg = Instance.new("Frame", row)
+    bg.Size = UDim2.new(0,36,0,20); bg.Position = UDim2.new(1,-48,0.5,-10)
+    bg.BackgroundColor3 = C.ToggleOff; bg.BorderSizePixel = 0
+    Instance.new("UICorner", bg).CornerRadius = UDim.new(0,10)
+    local knob = Instance.new("Frame", bg)
+    knob.Size = UDim2.new(0,14,0,14); knob.Position = UDim2.new(0,3,0.5,-7)
+    knob.BackgroundColor3 = C.TextSub; knob.BorderSizePixel = 0
+    Instance.new("UICorner", knob).CornerRadius = UDim.new(0,7)
+    local btn = Instance.new("TextButton", bg)
+    btn.Size = UDim2.new(1,8,1,8); btn.Position = UDim2.new(0,-4,0,-4)
+    btn.BackgroundTransparency = 1; btn.Text = ""; btn.BorderSizePixel = 0
+    local state = false
+    local function Set(s)
+        state = s
+        if s then
+            bg.BackgroundColor3 = ac; knob.BackgroundColor3 = Color3.fromRGB(255,255,255)
+            knob.Position = UDim2.new(1,-17,0.5,-7)
+            row.BackgroundColor3 = Color3.fromRGB(14,16,26); stroke.Color = C.AccentDim
+        else
+            bg.BackgroundColor3 = C.ToggleOff; knob.BackgroundColor3 = C.TextSub
+            knob.Position = UDim2.new(0,3,0.5,-7)
+            row.BackgroundColor3 = C.BG2; stroke.Color = C.Stroke
+        end
+    end
+    btn.MouseButton1Click:Connect(function() Set(not state) end)
+    return row, function() return state end, Set
 end
 
-local function Slider(parent, label, mn, mx, pct0, unit, cb)
-	local row = Instance.new("Frame", parent)
-	row.Size = UDim2.new(1,-8,0,66); row.BackgroundColor3 = REDZ.BG2; row.BorderSizePixel = 0
-	Instance.new("UICorner", row).CornerRadius = UDim.new(0,8)
-	local sk = Instance.new("UIStroke", row); sk.Color = REDZ.Stroke; sk.Thickness = 1
-	local tl = Instance.new("TextLabel", row)
-	tl.Size = UDim2.new(1,-80,0,20); tl.Position = UDim2.new(0,14,0,8)
-	tl.BackgroundTransparency = 1; tl.Text = label
-	tl.TextColor3 = REDZ.TextMain; tl.Font = Enum.Font.GothamBold; tl.TextSize = 12
-	tl.TextXAlignment = Enum.TextXAlignment.Left
-	local vl = Instance.new("TextLabel", row)
-	vl.Size = UDim2.new(0,70,0,20); vl.Position = UDim2.new(1,-78,0,8)
-	vl.BackgroundTransparency = 1; vl.Font = Enum.Font.GothamBold; vl.TextSize = 12
-	vl.TextColor3 = REDZ.AccentGlow; vl.TextXAlignment = Enum.TextXAlignment.Right
-	local sbg = Instance.new("Frame", row)
-	sbg.Size = UDim2.new(1,-28,0,5); sbg.Position = UDim2.new(0,14,0,42)
-	sbg.BackgroundColor3 = REDZ.SliderBG; sbg.BorderSizePixel = 0
-	Instance.new("UICorner", sbg).CornerRadius = UDim.new(0,3)
-	local hb = Instance.new("TextButton", sbg)
-	hb.Size = UDim2.new(1,0,0,28); hb.Position = UDim2.new(0,0,0.5,-14)
-	hb.BackgroundTransparency = 1; hb.Text = ""; hb.BorderSizePixel = 0; hb.ZIndex = 5
-	local fill = Instance.new("Frame", sbg)
-	fill.Size = UDim2.new(pct0,0,1,0); fill.BackgroundColor3 = REDZ.SliderFill; fill.BorderSizePixel = 0
-	Instance.new("UICorner", fill).CornerRadius = UDim.new(0,3)
-	local kn = Instance.new("Frame", sbg)
-	kn.Size = UDim2.new(0,14,0,14); kn.Position = UDim2.new(pct0,-7,0.5,-7)
-	kn.BackgroundColor3 = Color3.new(1,1,1); kn.BorderSizePixel = 0
-	Instance.new("UICorner", kn).CornerRadius = UDim.new(0,7)
-	local kr = Instance.new("UIStroke", kn); kr.Color = REDZ.Accent; kr.Thickness = 2
-	local isd = false
-	local function Compute(px)
-		local bx = sbg.AbsolutePosition.X; local bw = sbg.AbsoluteSize.X
-		local p  = math.clamp((px-bx)/bw, 0, 1)
-		return p, math.floor(mn + (mx-mn)*p)
-	end
-	local function Apply(p, v)
-		fill.Size = UDim2.new(p,0,1,0); kn.Position = UDim2.new(p,-7,0.5,-7)
-		vl.Text = v..(unit or "")
-		if cb then cb(v, p) end
-	end
-	Apply(pct0, math.floor(mn+(mx-mn)*pct0))
-	hb.MouseButton1Down:Connect(function() isd = true end)
-	UserInputService.InputChanged:Connect(function(inp)
-		if isd and (inp.UserInputType == Enum.UserInputType.MouseMovement
-			or inp.UserInputType == Enum.UserInputType.Touch) then
-			Apply(Compute(inp.Position.X))
-		end
-	end)
-	UserInputService.InputEnded:Connect(function(inp)
-		if inp.UserInputType == Enum.UserInputType.MouseButton1
-		or inp.UserInputType == Enum.UserInputType.Touch then isd = false end
-	end)
-	hb.MouseButton1Click:Connect(function()
-		Apply(Compute(UserInputService:GetMouseLocation().X))
-	end)
-	return row
-end
-
--- Action button (untuk escape)
-local function ActionBtn(parent, label, sub, btnTxt, onClick)
-	local row = Instance.new("Frame", parent)
-	row.Size = UDim2.new(1,-8,0,62); row.BackgroundColor3 = REDZ.BG2; row.BorderSizePixel = 0
-	Instance.new("UICorner", row).CornerRadius = UDim.new(0,8)
-	Instance.new("UIStroke", row).Color = REDZ.Stroke
-	local tl = Instance.new("TextLabel", row)
-	tl.Size = UDim2.new(1,-120,0,22); tl.Position = UDim2.new(0,14,0,8)
-	tl.BackgroundTransparency = 1; tl.Text = label
-	tl.TextColor3 = REDZ.TextMain; tl.Font = Enum.Font.GothamBold; tl.TextSize = 12
-	tl.TextXAlignment = Enum.TextXAlignment.Left
-	if sub then
-		local sl = Instance.new("TextLabel", row)
-		sl.Size = UDim2.new(1,-120,0,16); sl.Position = UDim2.new(0,14,0,28)
-		sl.BackgroundTransparency = 1; sl.Text = sub
-		sl.TextColor3 = REDZ.TextSub; sl.Font = Enum.Font.Gotham; sl.TextSize = 10
-		sl.TextXAlignment = Enum.TextXAlignment.Left
-	end
-	local btn = Instance.new("TextButton", row)
-	btn.Size = UDim2.new(0,90,0,30); btn.Position = UDim2.new(1,-100,0.5,-15)
-	btn.BackgroundColor3 = REDZ.Accent; btn.BorderSizePixel = 0
-	btn.Text = btnTxt; btn.TextColor3 = Color3.new(1,1,1)
-	btn.Font = Enum.Font.GothamBold; btn.TextSize = 11
-	Instance.new("UICorner", btn).CornerRadius = UDim.new(0,6)
-	btn.MouseButton1Click:Connect(onClick)
-	return row
+local function Slider(parent, label, dMin, dMax, initPct, unit, onChange)
+    local row = Instance.new("Frame", parent)
+    row.Size = UDim2.new(1,-8,0,66); row.BackgroundColor3 = C.BG2; row.BorderSizePixel = 0
+    Instance.new("UICorner", row).CornerRadius = UDim.new(0,8)
+    Instance.new("UIStroke", row).Color = C.Stroke
+    local tll = Instance.new("TextLabel", row)
+    tll.Size = UDim2.new(1,-80,0,20); tll.Position = UDim2.new(0,14,0,8)
+    tll.BackgroundTransparency = 1; tll.Text = label; tll.TextColor3 = C.TextMain
+    tll.Font = Enum.Font.GothamBold; tll.TextSize = 12; tll.TextXAlignment = Enum.TextXAlignment.Left
+    local vl = Instance.new("TextLabel", row)
+    vl.Size = UDim2.new(0,70,0,20); vl.Position = UDim2.new(1,-78,0,8)
+    vl.BackgroundTransparency = 1; vl.Font = Enum.Font.GothamBold; vl.TextSize = 12
+    vl.TextColor3 = C.AccentGlow; vl.TextXAlignment = Enum.TextXAlignment.Right
+    local sbg = Instance.new("Frame", row)
+    sbg.Size = UDim2.new(1,-28,0,5); sbg.Position = UDim2.new(0,14,0,42)
+    sbg.BackgroundColor3 = C.SliderBG; sbg.BorderSizePixel = 0
+    Instance.new("UICorner", sbg).CornerRadius = UDim.new(0,3)
+    local hit = Instance.new("TextButton", sbg)
+    hit.Size = UDim2.new(1,0,0,28); hit.Position = UDim2.new(0,0,0.5,-14)
+    hit.BackgroundTransparency = 1; hit.Text = ""; hit.BorderSizePixel = 0; hit.ZIndex = 5
+    local fill = Instance.new("Frame", sbg)
+    fill.Size = UDim2.new(initPct,0,1,0); fill.BackgroundColor3 = C.SliderFill; fill.BorderSizePixel = 0
+    Instance.new("UICorner", fill).CornerRadius = UDim.new(0,3)
+    local knob = Instance.new("Frame", sbg)
+    knob.Size = UDim2.new(0,14,0,14); knob.Position = UDim2.new(initPct,-7,0.5,-7)
+    knob.BackgroundColor3 = Color3.fromRGB(255,255,255); knob.BorderSizePixel = 0
+    Instance.new("UICorner", knob).CornerRadius = UDim.new(0,7)
+    Instance.new("UIStroke", knob).Color = C.Accent
+    local dragS = false
+    local function Compute(px)
+        local pct = math.clamp((px - sbg.AbsolutePosition.X)/sbg.AbsoluteSize.X,0,1)
+        return pct, math.floor(dMin + (dMax-dMin)*pct)
+    end
+    local function Apply(pct, val)
+        fill.Size = UDim2.new(pct,0,1,0); knob.Position = UDim2.new(pct,-7,0.5,-7)
+        vl.Text = val..(unit or ""); if onChange then onChange(val) end
+    end
+    Apply(initPct, math.floor(dMin+(dMax-dMin)*initPct))
+    hit.MouseButton1Down:Connect(function() dragS = true end)
+    UserInputService.InputChanged:Connect(function(i)
+        if dragS and (i.UserInputType == Enum.UserInputType.MouseMovement
+            or i.UserInputType == Enum.UserInputType.Touch) then
+            local p,v = Compute(i.Position.X); Apply(p,v)
+        end
+    end)
+    UserInputService.InputEnded:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.MouseButton1
+        or i.UserInputType == Enum.UserInputType.Touch then dragS = false end
+    end)
+    hit.MouseButton1Click:Connect(function()
+        local m = UserInputService:GetMouseLocation()
+        local p,v = Compute(m.X); Apply(p,v)
+    end)
 end
 
 local function BoneCycle(parent)
-	local bones = {"Head","HumanoidRootPart","Torso"}
-	local idx = 1
-	local row = Instance.new("Frame", parent)
-	row.Size = UDim2.new(1,-8,0,52); row.BackgroundColor3 = REDZ.BG2; row.BorderSizePixel = 0
-	Instance.new("UICorner", row).CornerRadius = UDim.new(0,8)
-	Instance.new("UIStroke", row).Color = REDZ.Stroke
-	local tl = Instance.new("TextLabel", row)
-	tl.Size = UDim2.new(1,-120,0,22); tl.Position = UDim2.new(0,14,0,8)
-	tl.BackgroundTransparency = 1; tl.Text = "Target Bone"
-	tl.TextColor3 = REDZ.TextMain; tl.Font = Enum.Font.GothamBold; tl.TextSize = 12
-	tl.TextXAlignment = Enum.TextXAlignment.Left
-	local sl = Instance.new("TextLabel", row)
-	sl.Size = UDim2.new(1,-120,0,16); sl.Position = UDim2.new(0,14,0,28)
-	sl.BackgroundTransparency = 1; sl.Text = "Klik untuk ganti"
-	sl.TextColor3 = REDZ.TextSub; sl.Font = Enum.Font.Gotham; sl.TextSize = 10
-	sl.TextXAlignment = Enum.TextXAlignment.Left
-	local cb = Instance.new("TextButton", row)
-	cb.Size = UDim2.new(0,100,0,28); cb.Position = UDim2.new(1,-108,0.5,-14)
-	cb.BackgroundColor3 = REDZ.AccentDim; cb.BorderSizePixel = 0
-	cb.Text = bones[idx]; cb.TextColor3 = REDZ.AccentGlow
-	cb.Font = Enum.Font.GothamBold; cb.TextSize = 11
-	Instance.new("UICorner", cb).CornerRadius = UDim.new(0,6)
-	cb.MouseButton1Click:Connect(function()
-		idx = (idx % #bones) + 1
-		CONFIG.TargetBone = bones[idx]; cb.Text = bones[idx]
-	end)
-	return row
+    local bones = {"Head", "HumanoidRootPart", "UpperTorso"}
+    local idx = 1
+    CONFIG.TargetBone = bones[idx]
+    local row = Instance.new("Frame", parent)
+    row.Size = UDim2.new(1,-8,0,52); row.BackgroundColor3 = C.BG2; row.BorderSizePixel = 0
+    Instance.new("UICorner", row).CornerRadius = UDim.new(0,8)
+    Instance.new("UIStroke", row).Color = C.Stroke
+    local tll = Instance.new("TextLabel", row)
+    tll.Size = UDim2.new(1,-120,0,22); tll.Position = UDim2.new(0,14,0,8)
+    tll.BackgroundTransparency = 1; tll.Text = "Target Bone"
+    tll.TextColor3 = C.TextMain; tll.Font = Enum.Font.GothamBold; tll.TextSize = 12
+    tll.TextXAlignment = Enum.TextXAlignment.Left
+    local sl = Instance.new("TextLabel", row)
+    sl.Size = UDim2.new(1,-120,0,16); sl.Position = UDim2.new(0,14,0,28)
+    sl.BackgroundTransparency = 1; sl.Text = "Klik untuk ganti"
+    sl.TextColor3 = C.TextSub; sl.Font = Enum.Font.Gotham; sl.TextSize = 10
+    sl.TextXAlignment = Enum.TextXAlignment.Left
+    local cb = Instance.new("TextButton", row)
+    cb.Size = UDim2.new(0,110,0,28); cb.Position = UDim2.new(1,-118,0.5,-14)
+    cb.BackgroundColor3 = C.AccentDim; cb.BorderSizePixel = 0
+    cb.Text = bones[idx]; cb.TextColor3 = C.AccentGlow
+    cb.Font = Enum.Font.GothamBold; cb.TextSize = 11
+    Instance.new("UICorner", cb).CornerRadius = UDim.new(0,6)
+    cb.MouseButton1Click:Connect(function()
+        idx = (idx % #bones) + 1
+        CONFIG.TargetBone = bones[idx]; cb.Text = bones[idx]
+    end)
 end
 
--- PAGES
-local pgEscape  = MakePage(); pages["escape"]   = pgEscape
+-- ── BUILD PAGES ───────────────────────────────────────────────────────────────
 local pgCombat  = MakePage(); pages["combat"]   = pgCombat
-local pgVehicle = MakePage(); pages["vehicle"]  = pgVehicle
 local pgMove    = MakePage(); pages["movement"] = pgMove
 local pgESP     = MakePage(); pages["esp"]      = pgESP
 
-local sbEscape  = MakeSideBtn("🔓","Escape","escape")
-local sbCombat  = MakeSideBtn("⚔","Combat","combat")
-local sbVehicle = MakeSideBtn("🚗","Vehicle","vehicle")
-local sbMove    = MakeSideBtn("👟","Movement","movement")
-local sbESP     = MakeSideBtn("👁","ESP","esp")
+local sbCombat = MakeSideBtn("🎯","Combat",   "combat")
+local sbMove   = MakeSideBtn("🏃","Movement", "movement")
+local sbESP    = MakeSideBtn("👁","ESP",       "esp")
 
--- Escape page
-SecLabel(pgEscape, "TELEPORT")
-ActionBtn(pgEscape, "Escape to Police Gate",
-	"Direct CFrame ke CFrame.new(-1135,18,-1370)",
-	"Teleport", DoEscape)
-
--- Combat page
 SecLabel(pgCombat, "SILENT AIM")
-local _, silentGet, _ = Toggle(pgCombat, "Silent Aim",
-	"Namecall hook: Fire/FireServer/Raycast → bone target")
+local _, saGet, _ = Toggle(pgCombat, "Silent Aim",
+    "Namecall hook: Fire/FireServer/Raycast", C.Red)
 BoneCycle(pgCombat)
-Slider(pgCombat, "FOV Radius", 30, 400, (CONFIG.SilentAimFOV-30)/370, " px", function(v)
-	CONFIG.SilentAimFOV = v; fovCircle.Radius = v
-end)
-SecLabel(pgCombat, "WEAPON")
-local _, noRecoilGet, _ = Toggle(pgCombat, "No Recoil / No Spread",
-	"Lock NumberValue recoil/spread di tool ke 0")
-
--- Vehicle page
-SecLabel(pgVehicle, "SPEED PUSH")
-local _, vehicleGet, _ = Toggle(pgVehicle, "Vehicle Speed Push",
-	"AssemblyLinearVelocity ke PrimaryPart saat W")
-Slider(pgVehicle, "Push Speed", 50, 1000, (CONFIG.VehicleSpeedVal-50)/950, " stud/s", function(v)
-	CONFIG.VehicleSpeedVal = v
+Slider(pgCombat, "FOV Radius", 30, 400, (CONFIG.SilentFOV-30)/370, " px", function(v)
+    CONFIG.SilentFOV = v; fovCircle.Radius = v
 end)
 
--- Movement page
 SecLabel(pgMove, "WALK SPEED")
-local _, fastRunGet, _ = Toggle(pgMove, "Fast Run",
-	"GetPropertyChangedSignal — reset-proof")
-Slider(pgMove, "Walk Speed", 16, 150, (CONFIG.WalkSpeed-16)/134, " stud/s", function(v)
-	CONFIG.WalkSpeed = v
-	if CONFIG.FastRun then ApplyWS() end
+local _, frGet, _ = Toggle(pgMove, "Fast Run", "WalkSpeed lock — reset-proof")
+Slider(pgMove, "Walk Speed", 16, 200, (CONFIG.WalkSpeed-16)/184, " stud/s", function(v)
+    CONFIG.WalkSpeed = v
+    if CONFIG.FastRun then ApplyWS() end
 end)
-SecLabel(pgMove, "JUMP POWER")
-local _, highJumpGet, _ = Toggle(pgMove, "High Jump",
-	"JumpPower lock + fall guard cap -80 stud/s")
+SecLabel(pgMove, "JUMP")
+local _, ijGet, _ = Toggle(pgMove, "Infinite Jump", "JumpPower lock + JumpRequest hook")
 Slider(pgMove, "Jump Power", 50, 300, (CONFIG.JumpPower-50)/250, "", function(v)
-	CONFIG.JumpPower = v
-	if CONFIG.HighJump then ApplyJP() end
+    CONFIG.JumpPower = v
+    if CONFIG.InfiniteJump then ApplyJP() end
 end)
 
--- ESP page
-SecLabel(pgESP, "WALLHACK")
-local _, espGet, _    = Toggle(pgESP, "ESP Highlight",
-	"Highlight + label jarak [Ns] — Biru=Police Merah=Crim")
-local _, tracerGet, _ = Toggle(pgESP, "Tracers",
-	"Drawing Line — cleanup per frame")
+SecLabel(pgESP, "PLAYER ESP")
+local _, peGet, _ = Toggle(pgESP, "Player ESP",   "Box + nama + HP — foot-to-head anchor")
+SecLabel(pgESP, "SKELETON ESP")
+local _, seGet, _ = Toggle(pgESP, "Skeleton ESP", "Garis tulang — R15 + R6")
 
--- Wire toggles via Heartbeat diff check
+-- ── WIRE ──────────────────────────────────────────────────────────────────────
 local function Wire(getter, key, onOn, onOff)
-	RunService.Heartbeat:Connect(function()
-		local s = getter()
-		if CONFIG[key] ~= s then
-			CONFIG[key] = s
-			if s then if onOn  then onOn()  end
-			else      if onOff then onOff() end end
-		end
-	end)
+    RunService.Heartbeat:Connect(function()
+        local s = getter()
+        if CONFIG[key] ~= s then
+            CONFIG[key] = s
+            if s then if onOn  then onOn()  end
+            else      if onOff then onOff() end end
+        end
+    end)
 end
 
-Wire(silentGet,   "SilentAim",    nil, function()
-	local _, _, h = GetChar()
-	fovCircle.Visible = false
-end)
-Wire(noRecoilGet, "NoRecoil", nil, nil)
-Wire(vehicleGet,  "VehicleSpeed", nil, nil)
-Wire(fastRunGet,  "FastRun",  StartFastRun, StartFastRun)
-Wire(highJumpGet, "HighJump", StartHighJump, StartHighJump)
-Wire(espGet, "ESP",
-	function()
-		for _, p in ipairs(Players:GetPlayers()) do
-			if p ~= LP and p.Character then MakeHL(p) end
-		end
-	end,
-	function() for p in pairs(ESP_HL) do RemoveHL(p) end end
-)
-Wire(tracerGet, "Tracers", nil, function()
-	for p, ln in pairs(ESP_TR) do ln:Remove(); ESP_TR[p] = nil end
-end)
+Wire(saGet, "SilentAim")
+Wire(frGet, "FastRun",      StartFastRun, StartFastRun)
+Wire(ijGet, "InfiniteJump", StartInfiniteJump, StartInfiniteJump)
+Wire(peGet, "PlayerESP")
+Wire(seGet, "SkeletonESP")
 
--- No Recoil: Heartbeat lock tool NumberValues
-RunService.Heartbeat:Connect(function()
-	if not CONFIG.NoRecoil then return end
-	local c = LP.Character; if not c then return end
-	local tool = c:FindFirstChildOfClass("Tool"); if not tool then return end
-	for _, v in ipairs(tool:GetDescendants()) do
-		if v:IsA("NumberValue") or v:IsA("IntValue") then
-			local n = string.lower(v.Name)
-			if n:find("recoil") or n:find("spread") or n:find("kick") or n:find("bloom") then
-				if v.Value ~= 0 then pcall(function() v.Value = 0 end) end
-			end
-		end
-	end
-end)
-
--- Sidebar clicks
-sbEscape.MouseButton1Click:Connect(function()  SetPage("escape")   end)
-sbCombat.MouseButton1Click:Connect(function()  SetPage("combat")   end)
-sbVehicle.MouseButton1Click:Connect(function() SetPage("vehicle")  end)
-sbMove.MouseButton1Click:Connect(function()    SetPage("movement") end)
-sbESP.MouseButton1Click:Connect(function()     SetPage("esp")      end)
+sbCombat.MouseButton1Click:Connect(function() SetPage("combat")   end)
+sbMove.MouseButton1Click:Connect(function()   SetPage("movement") end)
+sbESP.MouseButton1Click:Connect(function()    SetPage("esp")      end)
 SetPage("combat")
 
-local visible = true
+local vis = true
 minBtn.MouseButton1Click:Connect(function()
-	visible = not visible
-	sidebar.Visible = visible; cArea.Visible = visible
-	win.Size = visible and UDim2.new(0,580,0,420) or UDim2.new(0,580,0,42)
+    vis = not vis
+    sidebar.Visible = vis; cArea.Visible = vis
+    win.Size = vis and UDim2.new(0,500,0,420) or UDim2.new(0,500,0,42)
 end)
-
 closeBtn.MouseButton1Click:Connect(function()
-	CONFIG.SilentAim = false; CONFIG.NoRecoil = false
-	CONFIG.VehicleSpeed = false; CONFIG.FastRun = false
-	CONFIG.HighJump = false; CONFIG.ESP = false; CONFIG.Tracers = false
-	for p in pairs(ESP_HL)  do RemoveHL(p) end
-	for p, ln in pairs(ESP_TR) do ln:Remove(); ESP_TR[p] = nil end
-	if wsConn   then wsConn:Disconnect()   end
-	if jpConn   then jpConn:Disconnect()   end
-	if fallConn then fallConn:Disconnect() end
-	fovCircle:Remove(); sg:Destroy()
+    CONFIG.SilentAim = false; CONFIG.FastRun = false; CONFIG.InfiniteJump = false
+    local _, _, hum = GetChar()
+    if hum then pcall(function() hum.WalkSpeed = 16; hum.JumpPower = 50 end) end
+    if wsConn then wsConn:Disconnect() end
+    if jpConn then jpConn:Disconnect() end
+    if ijConn then ijConn:Disconnect() end
+    fovCircle:Remove()
+    for _, d in pairs(espData) do RemoveESP(d) end
+    sg:Destroy()
 end)
 
--- CharacterAdded reconnect
 LP.CharacterAdded:Connect(function(char)
-	local root = char:WaitForChild("HumanoidRootPart")
-	local hum  = char:WaitForChild("Humanoid")
-	if wsConn then wsConn:Disconnect() wsConn = nil end
-	if jpConn then jpConn:Disconnect() jpConn = nil end
-	task.wait(1)
-	if CONFIG.ESP then
-		for _, p in ipairs(Players:GetPlayers()) do
-			if p ~= LP and p.Character then MakeHL(p) end
-		end
-	end
-	if CONFIG.FastRun  then StartFastRun()  end
-	if CONFIG.HighJump then StartHighJump() end
+    task.wait(1)
+    if CONFIG.FastRun  then StartFastRun()       end
+    if CONFIG.InfiniteJump then StartInfiniteJump() end
 end)
 
--- RenderStepped: silent aim cam + fov circle + ESP update
 local espTick = 0
 RunService.RenderStepped:Connect(function()
-	if CONFIG.SilentAim then
-		TickSilentAim()
-		local vp = Camera.ViewportSize
-		fovCircle.Position = Vector2.new(vp.X/2, vp.Y/2)
-		fovCircle.Radius   = CONFIG.SilentAimFOV
-		fovCircle.Visible  = true
-	else
-		fovCircle.Visible = false
-	end
-	local now = tick()
-	if CONFIG.ESP and (now - espTick) >= 0.05 then
-		espTick = now
-		UpdateESP()
-	elseif not CONFIG.ESP then
-		for _, lbl in pairs(ESP_LBL) do lbl.Visible = false end
-		for _, tr in pairs(ESP_TR)  do tr.Visible  = false end
-	end
+    TickSilentAim()
+    local vp = Camera.ViewportSize
+    fovCircle.Position = Vector2.new(vp.X/2, vp.Y/2)
+    fovCircle.Visible  = CONFIG.SilentAim
+    fovCircle.Radius   = CONFIG.SilentFOV
+    local now = tick()
+    if now - espTick >= 0.05 then
+        espTick = now
+        UpdateESP()
+    end
 end)
