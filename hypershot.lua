@@ -26,26 +26,24 @@ local CONFIG = {
 	SkeletonESP  = false,
 }
 
--- ── LOS CHECK ────────────────────────────────────────────────────────────────
 local function IsVisible(bone, targetChar)
 	local myChar = LP.Character
 	local camPos = Camera.CFrame.Position
-	local dir    = bone.Position - camPos
+	local dir    = (bone.Position - camPos)
 	local dist   = dir.Magnitude
 	if dist < 0.1 then return true end
 
 	local params = RaycastParams.new()
 	params.FilterType = Enum.RaycastFilterType.Exclude
-	params.FilterDescendantsInstances = myChar and {myChar} or {}
+	local excluded = {}
+	if myChar then table.insert(excluded, myChar) end
+	if targetChar then table.insert(excluded, targetChar) end
+	params.FilterDescendantsInstances = excluded
 
 	local result = Workspace:Raycast(camPos, dir.Unit * dist, params)
-	if not result then return true end
-	return result.Instance ~= nil and result.Instance:IsDescendantOf(targetChar)
+	return result == nil
 end
 
--- ── GET BEST TARGET ───────────────────────────────────────────────────────────
--- Hanya cari target dalam FOV radius — TIDAK redirect kamera sama sekali
--- Kamera sepenuhnya dikendalikan user, namecall hook yang belokkan projectile
 local function GetBestTarget()
 	local vp    = Camera.ViewportSize
 	local cx    = vp.X / 2
@@ -63,17 +61,14 @@ local function GetBestTarget()
 		local hum = pc:FindFirstChildOfClass("Humanoid")
 		if not bone or not hum or hum.Health <= 0 then continue end
 
-		-- 1. On-screen
 		local sc, onScreen = Camera:WorldToViewportPoint(bone.Position)
 		if not onScreen or sc.Z <= 0 then continue end
 
-		-- 2. Dalam FOV radius (screen-space px dari tengah layar)
 		local dx = sc.X - cx
 		local dy = sc.Y - cy
 		local d  = math.sqrt(dx*dx + dy*dy)
 		if d >= CONFIG.SilentFOV then continue end
 
-		-- 3. LOS clear — tembok = skip, tidak ada fallback
 		if not IsVisible(bone, pc) then continue end
 
 		if d < bestD then
@@ -85,9 +80,6 @@ local function GetBestTarget()
 	return best
 end
 
--- ── NAMECALL HOOK — satu-satunya tempat redirect terjadi ─────────────────────
--- Kamera TIDAK disentuh di sini maupun di tempat lain
--- Kalau GetBestTarget() nil → semua args lewat normal, tidak ada snap
 local namecallHooked = false
 local function HookNamecall()
 	if namecallHooked then return end
@@ -99,7 +91,6 @@ local function HookNamecall()
 		local m    = getnamecallmethod()
 		local bone = GetBestTarget()
 
-		-- Tidak ada target dalam radius → pass through tanpa modifikasi
 		if not bone or not bone.Parent then return old(self, ...) end
 
 		local bPos = bone.Position
@@ -112,7 +103,7 @@ local function HookNamecall()
 				if typeof(v) == "Instance" and v:IsA("BasePart") then
 					args[i] = bone
 				elseif typeof(v) == "Ray" then
-					args[i] = Ray.new(camP, dir * 1000)
+					args[i] = Ray.new(camP, dir * 2048)
 				elseif typeof(v) == "CFrame" then
 					args[i] = CFrame.new(bPos)
 				elseif typeof(v) == "Vector3" then
@@ -123,14 +114,15 @@ local function HookNamecall()
 		end
 
 		if m == "Raycast" and self == Workspace then
-			return old(self, camP, dir * 1000, select(3, ...))
+			local params = select(3, ...)
+			return old(self, camP, dir * 2048, params)
 		end
 
 		if m == "FindPartOnRay"
 		or m == "FindPartOnRayWithIgnoreList"
 		or m == "FindPartOnRayWithWhitelist" then
 			local args = {...}
-			args[1] = Ray.new(camP, dir * 1000)
+			args[1] = Ray.new(camP, dir * 2048)
 			return old(self, table.unpack(args))
 		end
 
@@ -139,7 +131,6 @@ local function HookNamecall()
 end
 pcall(HookNamecall)
 
--- ── FAST RUN ──────────────────────────────────────────────────────────────────
 local wsConn = nil
 local function ApplyWS()
 	local _, _, hum = GetChar()
@@ -161,7 +152,6 @@ local function StartFastRun()
 	end
 end
 
--- ── INFINITE JUMP ─────────────────────────────────────────────────────────────
 local jpConn = nil
 local ijConn = nil
 local function ApplyJP()
@@ -194,7 +184,6 @@ local function StartInfiniteJump()
 	end)
 end
 
--- ── ESP DRAWING ───────────────────────────────────────────────────────────────
 local function NewText(size, color)
 	local t = Drawing.new("Text")
 	t.Size = size or 13; t.Center = true; t.Outline = true
@@ -379,7 +368,6 @@ local function UpdateESP()
 	end
 end
 
--- ── GUI ───────────────────────────────────────────────────────────────────────
 local sg = Instance.new("ScreenGui")
 sg.Name = "Ontoy_HS"; sg.ResetOnSpawn = false
 sg.Parent = LP:WaitForChild("PlayerGui")
@@ -666,7 +654,6 @@ local function BoneCycle(parent)
 	end)
 end
 
--- ── BUILD PAGES ───────────────────────────────────────────────────────────────
 local pgCombat = MakePage(); pages["combat"]   = pgCombat
 local pgMove   = MakePage(); pages["movement"] = pgMove
 local pgESP    = MakePage(); pages["esp"]      = pgESP
@@ -677,7 +664,7 @@ local sbESP    = MakeSideBtn("👁","ESP",       "esp")
 
 SecLabel(pgCombat, "SILENT HIT")
 local _, saGet, _ = Toggle(pgCombat, "Silent Hit",
-	"Namecall redirect — kamera bebas, peluru nempel", C.Red)
+	"Namecall redirect — tembok skip, peluru nempel", C.Red)
 BoneCycle(pgCombat)
 Slider(pgCombat, "FOV Radius", 5, 400, (CONFIG.SilentFOV-5)/395, " px", function(v)
 	CONFIG.SilentFOV = v; fovCircle.Radius = v
@@ -701,7 +688,6 @@ local _, peGet, _ = Toggle(pgESP, "Player ESP",   "Box + nama + HP — foot-to-h
 SecLabel(pgESP, "SKELETON ESP")
 local _, seGet, _ = Toggle(pgESP, "Skeleton ESP", "Garis tulang — R15 + R6")
 
--- ── WIRE ──────────────────────────────────────────────────────────────────────
 local function Wire(getter, key, onOn, onOff)
 	RunService.Heartbeat:Connect(function()
 		local s = getter()
@@ -744,13 +730,12 @@ end)
 
 LP.CharacterAdded:Connect(function()
 	task.wait(1)
-	if CONFIG.FastRun     then StartFastRun()       end
-	if CONFIG.InfiniteJump then StartInfiniteJump() end
+	if CONFIG.FastRun      then StartFastRun()       end
+	if CONFIG.InfiniteJump then StartInfiniteJump()  end
 end)
 
 local espTick = 0
 RunService.RenderStepped:Connect(function()
-	-- TickSilentAim DIHAPUS — kamera tidak disentuh sama sekali
 	local vp = Camera.ViewportSize
 	fovCircle.Position = Vector2.new(vp.X/2, vp.Y/2)
 	fovCircle.Visible  = CONFIG.SilentAim
