@@ -28,16 +28,12 @@ local CONFIG = {
 	JumpPower       = 50,
 	ESP             = false,
 	Tracers         = false,
-    -- [ NEW FEATURE ] Setup Config Baru
 	InfAmmo         = false,
 	Noclip          = false,
 	AntiRagdoll     = false,
 	AntiArrest      = false,
 }
 
--- ============================================================
--- SILENT AIM: hook universal di __namecall
--- ============================================================
 local function GetBestTarget()
 	local vp   = Camera.ViewportSize
 	local cx   = vp.X / 2
@@ -51,10 +47,19 @@ local function GetBestTarget()
 		local bone = pc:FindFirstChild(CONFIG.TargetBone) or pc:FindFirstChild("HumanoidRootPart")
 		local hum  = pc:FindFirstChildOfClass("Humanoid")
 		if not (bone and hum and hum.Health > 0) then continue end
-		local sc, on = Camera:WorldToViewportPoint(bone.Position)
+		local worldPos
+		if bone:IsA("BasePart") then
+			worldPos = bone.Position + Vector3.new(0, bone.Size.Y * 0.1, 0)
+		else
+			worldPos = bone.WorldPosition
+		end
+		local sc, on = Camera:WorldToViewportPoint(worldPos)
 		if not on then continue end
 		local d = math.sqrt((sc.X-cx)^2 + (sc.Y-cy)^2)
-		if d < fov and d < bestD then bestD = d; best = bone end
+		if d < fov and d < bestD then
+			bestD = d
+			best  = { bone = bone, pos = worldPos }
+		end
 	end
 	return best
 end
@@ -67,18 +72,16 @@ local function HookNamecall()
 	old = hookmetamethod(game, "__namecall", function(self, ...)
 		if not CONFIG.SilentAim then return old(self, ...) end
 		local m    = getnamecallmethod()
-		local bone = GetBestTarget()
-		if not (bone and bone.Parent) then return old(self, ...) end
-
-		local bPos = bone.Position
+		local best = GetBestTarget()
+		if not (best and best.bone and best.bone.Parent) then return old(self, ...) end
+		local bPos = best.pos
 		local camP = Camera.CFrame.Position
 		local dir  = (bPos - camP).Unit
-
 		if m == "FireServer" or m == "InvokeServer" or m == "Fire" then
 			local args = {...}
 			for i, v in ipairs(args) do
 				if typeof(v) == "Instance" and v:IsA("BasePart") then
-					args[i] = bone
+					args[i] = best.bone
 				elseif typeof(v) == "Ray" then
 					args[i] = Ray.new(camP, dir * 1000)
 				elseif typeof(v) == "CFrame" then
@@ -89,11 +92,9 @@ local function HookNamecall()
 			end
 			return old(self, table.unpack(args))
 		end
-
 		if m == "Raycast" and self == Workspace then
 			return old(self, camP, dir * 1000, select(3, ...))
 		end
-
 		if m == "FindPartOnRay"
 		or m == "FindPartOnRayWithIgnoreList"
 		or m == "FindPartOnRayWithWhitelist" then
@@ -101,7 +102,6 @@ local function HookNamecall()
 			args[1] = Ray.new(camP, dir * 1000)
 			return old(self, table.unpack(args))
 		end
-
 		return old(self, ...)
 	end)
 end
@@ -109,27 +109,19 @@ pcall(HookNamecall)
 
 local function TickSilentAim()
 	if not CONFIG.SilentAim then return end
-	local bone = GetBestTarget()
-	if not (bone and bone.Parent) then return end
+	local best = GetBestTarget()
+	if not (best and best.bone and best.bone.Parent) then return end
 	local camP = Camera.CFrame.Position
-	local dir  = (bone.Position - camP).Unit
-	Camera.CFrame = CFrame.new(camP, camP + dir)
+	Camera.CFrame = CFrame.new(camP, best.pos)
 end
 
--- ============================================================
--- AUTO ESCAPE
--- ============================================================
 local POLICE_GATE = CFrame.new(-1135, 18, -1370)
-
 local function DoEscape()
 	local _, root, hum = GetChar()
 	if not (root and hum and hum.Health > 0) then return end
 	root.CFrame = POLICE_GATE
 end
 
--- ============================================================
--- VEHICLE SPEED
--- ============================================================
 local wHeld = false
 UserInputService.InputBegan:Connect(function(inp, gp)
 	if gp then return end
@@ -158,9 +150,6 @@ RunService.Heartbeat:Connect(function()
 	end)
 end)
 
--- ============================================================
--- FAST RUN
--- ============================================================
 local wsConn = nil
 local function ApplyWS()
 	local _, _, hum = GetChar()
@@ -168,7 +157,11 @@ local function ApplyWS()
 end
 local function StartFastRun()
 	if wsConn then wsConn:Disconnect() wsConn = nil end
-	if not CONFIG.FastRun then ApplyWS() return end
+	if not CONFIG.FastRun then
+		local _, _, hum = GetChar()
+		if hum then pcall(function() hum.WalkSpeed = 16 end) end
+		return
+	end
 	ApplyWS()
 	local _, _, hum = GetChar()
 	if hum then
@@ -178,9 +171,6 @@ local function StartFastRun()
 	end
 end
 
--- ============================================================
--- HIGH JUMP
--- ============================================================
 local jpConn   = nil
 local fallConn = nil
 local function ApplyJP()
@@ -215,9 +205,6 @@ local function StartHighJump()
 	end)
 end
 
--- ============================================================
--- ESP
--- ============================================================
 local ESP_HL  = {}
 local ESP_LBL = {}
 local ESP_TR  = {}
@@ -274,7 +261,7 @@ local function UpdateESP()
 			if on and myRoot then
 				local dist = math.floor((myRoot.Position - proot.Position).Magnitude)
 				lbl.Position = Vector2.new(sc.X, sc.Y - 26)
-				lbl.Text     = p.Name .. " [" .. dist .. "s]"
+				lbl.Text     = p.Name .. " [" .. dist .. "m]"
 				lbl.Color    = fill
 				lbl.Visible  = true
 			else
@@ -284,15 +271,12 @@ local function UpdateESP()
 		if CONFIG.Tracers then
 			local vp = Camera.ViewportSize
 			if not tr then
-				tr = Drawing.new("Line")
-				tr.Thickness = 1
-				ESP_TR[p] = tr
+				tr = Drawing.new("Line"); tr.Thickness = 1; ESP_TR[p] = tr
 			end
 			if on then
-				tr.From    = Vector2.new(vp.X/2, vp.Y)
-				tr.To      = Vector2.new(sc.X, sc.Y)
-				tr.Color   = fill
-				tr.Visible = true
+				tr.From = Vector2.new(vp.X/2, vp.Y)
+				tr.To   = Vector2.new(sc.X, sc.Y)
+				tr.Color = fill; tr.Visible = true
 			else
 				tr.Visible = false
 			end
@@ -318,15 +302,76 @@ for _, p in ipairs(Players:GetPlayers()) do
 	end
 end
 
-local fovCircle       = Drawing.new("Circle")
-fovCircle.Filled      = false
-fovCircle.Thickness   = 1
-fovCircle.Color       = Color3.fromRGB(255,60,80)
-fovCircle.Visible     = false
+local fovCircle     = Drawing.new("Circle")
+fovCircle.Filled    = false
+fovCircle.Thickness = 1
+fovCircle.Color     = Color3.fromRGB(255,60,80)
+fovCircle.Visible   = false
 
--- ============================================================
--- GUI SETUP
--- ============================================================
+-- ── LOGIC: Infinite Ammo + No Recoil ────────────────────────────────────────
+RunService.Heartbeat:Connect(function()
+	local c = LP.Character; if not c then return end
+	local tool = c:FindFirstChildOfClass("Tool"); if not tool then return end
+	for _, v in ipairs(tool:GetDescendants()) do
+		if v:IsA("NumberValue") or v:IsA("IntValue") then
+			local n = string.lower(v.Name)
+			if CONFIG.NoRecoil and (n:find("recoil") or n:find("spread") or n:find("kick") or n:find("bloom")) then
+				if v.Value ~= 0 then pcall(function() v.Value = 0 end) end
+			end
+			if CONFIG.InfAmmo and (n == "ammo" or n == "clip" or n == "mag" or n == "maxammo" or n:find("ammo")) then
+				if v.Value < 999 then pcall(function() v.Value = 999 end) end
+			end
+		end
+	end
+end)
+
+-- ── LOGIC: Noclip ────────────────────────────────────────────────────────────
+RunService.Stepped:Connect(function()
+	if not CONFIG.Noclip then return end
+	local c = LP.Character; if not c then return end
+	for _, v in ipairs(c:GetDescendants()) do
+		if v:IsA("BasePart") and v.CanCollide then
+			v.CanCollide = false
+		end
+	end
+end)
+
+-- ── LOGIC: Anti-Ragdoll ──────────────────────────────────────────────────────
+RunService.Heartbeat:Connect(function()
+	if not CONFIG.AntiRagdoll then return end
+	local _, _, hum = GetChar()
+	if not hum then return end
+	pcall(function()
+		hum:SetStateEnabled(Enum.HumanoidStateType.Ragdoll,     false)
+		hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
+		if hum.PlatformStand then hum.PlatformStand = false end
+	end)
+end)
+
+-- ── LOGIC: Anti-Arrest ───────────────────────────────────────────────────────
+-- Kalau polisi dalam radius 15 stud, teleport naik 20 stud biar lepas dari arrest range
+RunService.Heartbeat:Connect(function()
+	if not CONFIG.AntiArrest then return end
+	local _, root, hum = GetChar()
+	if not (root and hum and hum.Health > 0) then return end
+	for _, p in ipairs(Players:GetPlayers()) do
+		if p == LP then continue end
+		local t = string.lower(p.Team and p.Team.Name or "")
+		if not t:find("police") then continue end
+		local pc    = p.Character
+		local proot = pc and pc:FindFirstChild("HumanoidRootPart")
+		local phum  = pc and pc:FindFirstChildOfClass("Humanoid")
+		if not (proot and phum and phum.Health > 0) then continue end
+		if (root.Position - proot.Position).Magnitude < 15 then
+			pcall(function()
+				root.CFrame = root.CFrame + Vector3.new(0, 20, 0)
+			end)
+			break
+		end
+	end
+end)
+
+-- ── GUI ──────────────────────────────────────────────────────────────────────
 local REDZ = {
 	BG         = Color3.fromRGB(14,12,16),
 	BG2        = Color3.fromRGB(20,16,22),
@@ -339,6 +384,7 @@ local REDZ = {
 	ToggleOff  = Color3.fromRGB(40,32,36),
 	SliderFill = Color3.fromRGB(200,30,50),
 	SliderBG   = Color3.fromRGB(35,28,32),
+	Green      = Color3.fromRGB(30,180,80),
 }
 
 local sg = Instance.new("ScreenGui")
@@ -432,8 +478,8 @@ local cLayout = Instance.new("UIListLayout", cScroll)
 cLayout.Padding = UDim.new(0,6); cLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
 Instance.new("UIPadding", cScroll).PaddingTop = UDim.new(0,8)
 
-local pages   = {}
-local sideBtns= {}
+local pages    = {}
+local sideBtns = {}
 
 local function MakePage()
 	local pg = Instance.new("Frame", cScroll)
@@ -488,7 +534,8 @@ local function SecLabel(parent, txt)
 	return l
 end
 
-local function Toggle(parent, label, sub)
+local function Toggle(parent, label, sub, ac)
+	ac = ac or REDZ.Accent
 	local row = Instance.new("Frame", parent)
 	row.Size = UDim2.new(1,-8,0,52); row.BackgroundColor3 = REDZ.BG2; row.BorderSizePixel = 0
 	Instance.new("UICorner", row).CornerRadius = UDim.new(0,8)
@@ -519,11 +566,11 @@ local function Toggle(parent, label, sub)
 	local state = false
 	local function Set(s)
 		state = s
-		tbg.BackgroundColor3 = s and REDZ.Accent or REDZ.ToggleOff
+		tbg.BackgroundColor3  = s and ac or REDZ.ToggleOff
 		knob.BackgroundColor3 = s and Color3.new(1,1,1) or REDZ.TextSub
-		knob.Position = s and UDim2.new(1,-17,0.5,-7) or UDim2.new(0,3,0.5,-7)
-		row.BackgroundColor3 = s and Color3.fromRGB(24,14,18) or REDZ.BG2
-		sk.Color = s and REDZ.AccentDim or REDZ.Stroke
+		knob.Position         = s and UDim2.new(1,-17,0.5,-7) or UDim2.new(0,3,0.5,-7)
+		row.BackgroundColor3  = s and Color3.fromRGB(24,14,18) or REDZ.BG2
+		sk.Color              = s and REDZ.AccentDim or REDZ.Stroke
 	end
 	tb.MouseButton1Click:Connect(function() Set(not state) end)
 	return row, function() return state end, Set
@@ -617,6 +664,7 @@ end
 local function BoneCycle(parent)
 	local bones = {"Head","HumanoidRootPart","Torso"}
 	local idx = 1
+	CONFIG.TargetBone = bones[idx]
 	local row = Instance.new("Frame", parent)
 	row.Size = UDim2.new(1,-8,0,52); row.BackgroundColor3 = REDZ.BG2; row.BorderSizePixel = 0
 	Instance.new("UICorner", row).CornerRadius = UDim.new(0,8)
@@ -644,29 +692,28 @@ local function BoneCycle(parent)
 	return row
 end
 
--- PAGES
+-- ── PAGES ────────────────────────────────────────────────────────────────────
 local pgEscape  = MakePage(); pages["escape"]   = pgEscape
 local pgCombat  = MakePage(); pages["combat"]   = pgCombat
 local pgVehicle = MakePage(); pages["vehicle"]  = pgVehicle
 local pgMove    = MakePage(); pages["movement"] = pgMove
 local pgESP     = MakePage(); pages["esp"]      = pgESP
 
-local sbEscape  = MakeSideBtn("🔓","Escape","escape")
-local sbCombat  = MakeSideBtn("⚔","Combat","combat")
-local sbVehicle = MakeSideBtn("🚗","Vehicle","vehicle")
-local sbMove    = MakeSideBtn("👟","Movement","movement")
-local sbESP     = MakeSideBtn("👁","ESP","esp")
+local sbEscape  = MakeSideBtn("🔓","Escape",   "escape")
+local sbCombat  = MakeSideBtn("⚔", "Combat",   "combat")
+local sbVehicle = MakeSideBtn("🚗","Vehicle",  "vehicle")
+local sbMove    = MakeSideBtn("👟","Movement", "movement")
+local sbESP     = MakeSideBtn("👁","ESP",      "esp")
 
--- [ NEW FEATURE UI ] Escape page (Added Anti-Arrest toggle)
+-- ESCAPE PAGE
 SecLabel(pgEscape, "DEFENSE")
-local _, antiArrestGet, _ = Toggle(pgEscape, "Anti-Arrest", "Teleport ke atas kalau polisi dekat (<15 stud)")
-
+local _, antiArrestGet, _ = Toggle(pgEscape, "Anti-Arrest",
+	"Teleport naik 20 stud kalau polisi < 15 stud", REDZ.Green)
 SecLabel(pgEscape, "TELEPORT")
 ActionBtn(pgEscape, "Escape to Police Gate",
-	"Direct CFrame ke CFrame.new(-1135,18,-1370)",
-	"Teleport", DoEscape)
+	"Teleport ke CFrame.new(-1135,18,-1370)", "Teleport", DoEscape)
 
--- [ NEW FEATURE UI ] Combat page (Added Inf Ammo toggle)
+-- COMBAT PAGE
 SecLabel(pgCombat, "SILENT AIM")
 local _, silentGet, _ = Toggle(pgCombat, "Silent Aim",
 	"Namecall hook: Fire/FireServer/Raycast → bone target")
@@ -676,11 +723,11 @@ Slider(pgCombat, "FOV Radius", 30, 400, (CONFIG.SilentAimFOV-30)/370, " px", fun
 end)
 SecLabel(pgCombat, "WEAPON")
 local _, noRecoilGet, _ = Toggle(pgCombat, "No Recoil / No Spread",
-	"Lock NumberValue recoil/spread di tool ke 0")
-local _, infAmmoGet, _ = Toggle(pgCombat, "Infinite Ammo",
-	"Set NumberValue ammo di tool ke 999")
+	"Lock NumberValue recoil/spread/bloom ke 0")
+local _, infAmmoGet, _  = Toggle(pgCombat, "Infinite Ammo",
+	"Set ammo/clip/mag ke 999 tiap frame", REDZ.Green)
 
--- Vehicle page
+-- VEHICLE PAGE
 SecLabel(pgVehicle, "SPEED PUSH")
 local _, vehicleGet, _ = Toggle(pgVehicle, "Vehicle Speed Push",
 	"AssemblyLinearVelocity ke PrimaryPart saat W")
@@ -688,11 +735,12 @@ Slider(pgVehicle, "Push Speed", 50, 1000, (CONFIG.VehicleSpeedVal-50)/950, " stu
 	CONFIG.VehicleSpeedVal = v
 end)
 
--- [ NEW FEATURE UI ] Movement page (Added Noclip & Anti-Ragdoll toggles)
+-- MOVEMENT PAGE
 SecLabel(pgMove, "HACKS")
-local _, noclipGet, _ = Toggle(pgMove, "Noclip", "Jalan nembus tembok / BasePart collision off")
-local _, antiRagdollGet, _ = Toggle(pgMove, "Anti-Ragdoll", "Mencegah karakter jatuh/PlatformStand")
-
+local _, noclipGet, _      = Toggle(pgMove, "Noclip",
+	"CanCollide = false semua BasePart karakter", REDZ.Green)
+local _, antiRagdollGet, _ = Toggle(pgMove, "Anti-Ragdoll",
+	"Disable Ragdoll + FallingDown state + PlatformStand lock", REDZ.Green)
 SecLabel(pgMove, "WALK SPEED")
 local _, fastRunGet, _ = Toggle(pgMove, "Fast Run",
 	"GetPropertyChangedSignal — reset-proof")
@@ -708,14 +756,14 @@ Slider(pgMove, "Jump Power", 50, 300, (CONFIG.JumpPower-50)/250, "", function(v)
 	if CONFIG.HighJump then ApplyJP() end
 end)
 
--- ESP page
+-- ESP PAGE
 SecLabel(pgESP, "WALLHACK")
 local _, espGet, _    = Toggle(pgESP, "ESP Highlight",
-	"Highlight + label jarak [Ns] — Biru=Police Merah=Crim")
+	"Highlight + label jarak — Biru=Police Merah=Crim")
 local _, tracerGet, _ = Toggle(pgESP, "Tracers",
-	"Drawing Line — cleanup per frame")
+	"Drawing Line dari bawah layar ke player")
 
--- Wire toggles via Heartbeat diff check
+-- ── WIRE ─────────────────────────────────────────────────────────────────────
 local function Wire(getter, key, onOn, onOff)
 	RunService.Heartbeat:Connect(function()
 		local s = getter()
@@ -727,17 +775,21 @@ local function Wire(getter, key, onOn, onOff)
 	end)
 end
 
-Wire(silentGet,   "SilentAim",    nil, function() fovCircle.Visible = false end)
-Wire(noRecoilGet, "NoRecoil", nil, nil)
--- [ NEW FEATURE WIRING ]
-Wire(infAmmoGet, "InfAmmo", nil, nil)
-Wire(noclipGet, "Noclip", nil, nil)
-Wire(antiRagdollGet, "AntiRagdoll", nil, nil)
-Wire(antiArrestGet, "AntiArrest", nil, nil)
-
-Wire(vehicleGet,  "VehicleSpeed", nil, nil)
-Wire(fastRunGet,  "FastRun",  StartFastRun, StartFastRun)
-Wire(highJumpGet, "HighJump", StartHighJump, StartHighJump)
+Wire(silentGet,      "SilentAim",    nil, function() fovCircle.Visible = false end)
+Wire(noRecoilGet,    "NoRecoil",     nil, nil)
+Wire(infAmmoGet,     "InfAmmo",      nil, nil)   -- logic jalan di Heartbeat sendiri
+Wire(noclipGet,      "Noclip",       nil, function()
+	-- restore collision saat dimatiin
+	local c = LP.Character; if not c then return end
+	for _, v in ipairs(c:GetDescendants()) do
+		if v:IsA("BasePart") then pcall(function() v.CanCollide = true end) end
+	end
+end)
+Wire(antiRagdollGet, "AntiRagdoll",  nil, nil)
+Wire(antiArrestGet,  "AntiArrest",   nil, nil)
+Wire(vehicleGet,     "VehicleSpeed", nil, nil)
+Wire(fastRunGet,     "FastRun",      StartFastRun,  StartFastRun)
+Wire(highJumpGet,    "HighJump",     StartHighJump, StartHighJump)
 Wire(espGet, "ESP",
 	function()
 		for _, p in ipairs(Players:GetPlayers()) do
@@ -750,81 +802,7 @@ Wire(tracerGet, "Tracers", nil, function()
 	for p, ln in pairs(ESP_TR) do ln:Remove(); ESP_TR[p] = nil end
 end)
 
--- ============================================================
--- [ NEW FEATURE LOGIC ] 
--- ============================================================
-
--- Modifikasi Heartbeat NoRecoil biar sekalian ngurus Infinite Ammo
-RunService.Heartbeat:Connect(function()
-	local c = LP.Character; if not c then return end
-	local tool = c:FindFirstChildOfClass("Tool"); if not tool then return end
-	for _, v in ipairs(tool:GetDescendants()) do
-		if v:IsA("NumberValue") or v:IsA("IntValue") then
-			local n = string.lower(v.Name)
-			-- No Recoil
-			if CONFIG.NoRecoil and (n:find("recoil") or n:find("spread") or n:find("kick") or n:find("bloom")) then
-				if v.Value ~= 0 then pcall(function() v.Value = 0 end) end
-			end
-			-- Infinite Ammo
-			if CONFIG.InfAmmo and (n == "ammo" or n == "clip" or n == "mag" or n == "maxammo") then
-				if v.Value < 999 then pcall(function() v.Value = 999 end) end
-			end
-		end
-	end
-end)
-
--- Noclip dijalankan di RenderStepped/Stepped biar Physics engine ga sempet nabrak
-RunService.Stepped:Connect(function()
-	if not CONFIG.Noclip then return end
-	local c = LP.Character
-	if c then
-		for _, v in ipairs(c:GetDescendants()) do
-			if v:IsA("BasePart") and v.CanCollide then
-				v.CanCollide = false
-			end
-		end
-	end
-end)
-
--- Anti-Ragdoll 
-RunService.Heartbeat:Connect(function()
-	if not CONFIG.AntiRagdoll then return end
-	local _, _, hum = GetChar()
-	if hum then
-		pcall(function()
-			hum:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
-			hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
-			if hum.PlatformStand then hum.PlatformStand = false end
-		end)
-	end
-end)
-
--- Anti-Arrest 
-RunService.Heartbeat:Connect(function()
-	if not CONFIG.AntiArrest then return end
-	local _, root, hum = GetChar()
-	if not (root and hum and hum.Health > 0) then return end
-
-	for _, p in ipairs(Players:GetPlayers()) do
-		if p == LP then continue end
-		local t = string.lower(p.Team and p.Team.Name or "")
-		if t:find("police") then
-			local pc = p.Character
-			local proot = pc and pc:FindFirstChild("HumanoidRootPart")
-			local phum  = pc and pc:FindFirstChildOfClass("Humanoid")
-			if proot and phum and phum.Health > 0 then
-				local dist = (root.Position - proot.Position).Magnitude
-				if dist < 15 then
-					-- Lontarkan/teleport karakter lu ke atas setinggi 15 stud kalau jarak polisi < 15 stud
-					root.CFrame = root.CFrame + Vector3.new(0, 15, 0)
-				end
-			end
-		end
-	end
-end)
-
-
--- Sidebar clicks
+-- ── SIDEBAR CLICKS ───────────────────────────────────────────────────────────
 sbEscape.MouseButton1Click:Connect(function()  SetPage("escape")   end)
 sbCombat.MouseButton1Click:Connect(function()  SetPage("combat")   end)
 sbVehicle.MouseButton1Click:Connect(function() SetPage("vehicle")  end)
@@ -840,14 +818,26 @@ minBtn.MouseButton1Click:Connect(function()
 end)
 
 closeBtn.MouseButton1Click:Connect(function()
-	CONFIG.SilentAim = false; CONFIG.NoRecoil = false
-	CONFIG.VehicleSpeed = false; CONFIG.FastRun = false
-	CONFIG.HighJump = false; CONFIG.ESP = false; CONFIG.Tracers = false
-    -- [ NEW FEATURE CLEANUP ] Reset saat di-close
-	CONFIG.InfAmmo = false; CONFIG.Noclip = false; 
-	CONFIG.AntiRagdoll = false; CONFIG.AntiArrest = false;
-
-	for p in pairs(ESP_HL)  do RemoveHL(p) end
+	CONFIG.SilentAim=false; CONFIG.NoRecoil=false; CONFIG.InfAmmo=false
+	CONFIG.VehicleSpeed=false; CONFIG.FastRun=false; CONFIG.HighJump=false
+	CONFIG.ESP=false; CONFIG.Tracers=false
+	CONFIG.Noclip=false; CONFIG.AntiRagdoll=false; CONFIG.AntiArrest=false
+	local c = LP.Character
+	if c then
+		for _, v in ipairs(c:GetDescendants()) do
+			if v:IsA("BasePart") then pcall(function() v.CanCollide = true end) end
+		end
+		local hum = c:FindFirstChildOfClass("Humanoid")
+		if hum then
+			pcall(function()
+				hum.WalkSpeed = 16
+				hum.JumpPower = 50
+				hum:SetStateEnabled(Enum.HumanoidStateType.Ragdoll,     true)
+				hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, true)
+			end)
+		end
+	end
+	for p in pairs(ESP_HL) do RemoveHL(p) end
 	for p, ln in pairs(ESP_TR) do ln:Remove(); ESP_TR[p] = nil end
 	if wsConn   then wsConn:Disconnect()   end
 	if jpConn   then jpConn:Disconnect()   end
@@ -855,7 +845,6 @@ closeBtn.MouseButton1Click:Connect(function()
 	fovCircle:Remove(); sg:Destroy()
 end)
 
--- CharacterAdded reconnect
 LP.CharacterAdded:Connect(function(char)
 	local root = char:WaitForChild("HumanoidRootPart")
 	local hum  = char:WaitForChild("Humanoid")
@@ -871,7 +860,6 @@ LP.CharacterAdded:Connect(function(char)
 	if CONFIG.HighJump then StartHighJump() end
 end)
 
--- RenderStepped
 local espTick = 0
 RunService.RenderStepped:Connect(function()
 	if CONFIG.SilentAim then
@@ -889,6 +877,6 @@ RunService.RenderStepped:Connect(function()
 		UpdateESP()
 	elseif not CONFIG.ESP then
 		for _, lbl in pairs(ESP_LBL) do lbl.Visible = false end
-		for _, tr in pairs(ESP_TR)  do tr.Visible  = false end
+		for _, tr  in pairs(ESP_TR)  do tr.Visible  = false end
 	end
 end)
