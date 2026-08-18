@@ -4,530 +4,725 @@ local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
 local Camera = Workspace.CurrentCamera
 
-local LP = Players.LocalPlayer
+local LocalPlayer = Players.LocalPlayer
+local LocalCharacter = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+local LocalRoot = LocalCharacter:WaitForChild("HumanoidRootPart")
+local LocalHumanoid = LocalCharacter:WaitForChild("Humanoid")
 
-local function GetChar()
-	local c = LP.Character
-	if not c then return nil, nil, nil end
-	local r = c:FindFirstChild("HumanoidRootPart")
-	local h = c:FindFirstChildOfClass("Humanoid")
-	return c, r, h
-end
-
-local REMOTE_ATTACK = "AttackPlayer"
-local REMOTE_SKILL  = "UseSkill"
-
-local CONFIG = {
-	AutoAttack  = false,
-	AttackRange = 20,
-	NoCooldown  = false,
-	FastRun     = false,
-	WalkSpeed   = 60,
-	HighJump    = false,
-	JumpPower   = 100,
-	Noclip      = false,
-}
-
-local attackRemote = nil
-local function FindAttackRemote()
-	local rs = game:GetService("ReplicatedStorage")
-	local found = rs:FindFirstChild(REMOTE_ATTACK, true)
-	if not found then found = game:FindFirstChild(REMOTE_ATTACK, true) end
-	return found
-end
-
-local lastAttack = 0
-
-local function TickAutoAttack()
-	if not CONFIG.AutoAttack then return end
-	local _, myRoot, myHum = GetChar()
-	if not myRoot or not myHum or myHum.Health <= 0 then return end
-	if not attackRemote then attackRemote = FindAttackRemote() end
-	local now = tick()
-	if now - lastAttack < 0.1 then return end
-	lastAttack = now
-	for _, plr in ipairs(Players:GetPlayers()) do
-		if plr == LP or not plr.Character then continue end
-		local hum  = plr.Character:FindFirstChildOfClass("Humanoid")
-		local root = plr.Character:FindFirstChild("HumanoidRootPart")
-		if not hum or not root or hum.Health <= 0 then continue end
-		local dist = (root.Position - myRoot.Position).Magnitude
-		if dist > CONFIG.AttackRange then continue end
-		if attackRemote and attackRemote:IsA("RemoteEvent") then
-			pcall(function() attackRemote:FireServer(plr.Character, root.Position) end)
-		end
-		local char = LP.Character
-		if char then
-			local tool = char:FindFirstChildOfClass("Tool")
-			if tool then
-				local re = tool:FindFirstChildWhichIsA("RemoteEvent", true)
-				if re then pcall(function() re:FireServer(root.Position) end) end
-			end
-		end
-	end
-end
-
-local noCDHooked = false
-local function HookNoCooldown()
-	if noCDHooked then return end
-	noCDHooked = true
-	local old
-	old = hookmetamethod(game, "__namecall", function(self, ...)
-		local m = getnamecallmethod()
-		if CONFIG.NoCooldown and typeof(self) == "Instance" then
-			if m == "FireServer" or m == "InvokeServer" then
-				local name = self.Name
-				if string.find(name:lower(), "skill")
-				or string.find(name:lower(), "attack")
-				or string.find(name:lower(), "ability")
-				or string.find(name:lower(), "power")
-				or name == REMOTE_SKILL then
-					pcall(function() old(self, ...) end)
-					return old(self, ...)
-				end
-			end
-		end
-		return old(self, ...)
-	end)
-end
-pcall(HookNoCooldown)
-
-local wsConn = nil
-local function ApplyWS()
-	local _, _, hum = GetChar()
-	if hum then pcall(function() hum.WalkSpeed = CONFIG.WalkSpeed end) end
-end
-local function StartFastRun()
-	if wsConn then wsConn:Disconnect(); wsConn = nil end
-	if not CONFIG.FastRun then
-		local _, _, hum = GetChar()
-		if hum then pcall(function() hum.WalkSpeed = 16 end) end
-		return
-	end
-	ApplyWS()
-	local _, _, hum = GetChar()
-	if hum then
-		wsConn = hum:GetPropertyChangedSignal("WalkSpeed"):Connect(function()
-			if CONFIG.FastRun then task.defer(ApplyWS) end
-		end)
-	end
-end
-
-local jpConn = nil
-local ijConn = nil
-local function ApplyJP()
-	local _, _, hum = GetChar()
-	if not hum then return end
-	pcall(function()
-		hum.UseJumpPower = true
-		hum.JumpPower    = CONFIG.JumpPower
-	end)
-end
-local function StartHighJump()
-	if jpConn then jpConn:Disconnect(); jpConn = nil end
-	if ijConn then ijConn:Disconnect(); ijConn = nil end
-	if not CONFIG.HighJump then
-		local _, _, hum = GetChar()
-		if hum then pcall(function() hum.JumpPower = 50 end) end
-		return
-	end
-	ApplyJP()
-	local _, _, hum = GetChar()
-	if hum then
-		jpConn = hum:GetPropertyChangedSignal("JumpPower"):Connect(function()
-			if CONFIG.HighJump then task.defer(ApplyJP) end
-		end)
-	end
-	ijConn = UserInputService.JumpRequest:Connect(function()
-		if not CONFIG.HighJump then return end
-		local _, _, hum2 = GetChar()
-		if hum2 then hum2:ChangeState(Enum.HumanoidStateType.Jumping) end
-	end)
-end
-
+local ESP_Objects = {}
 local noclipConn = nil
+local flyConn = nil
+local flyBodyVel = nil
+local flyBodyGyro = nil
+local fastShootConn = nil
+
+local CFG = {
+	WalkSpeed  = 50,
+	JumpPower  = 80,
+	FlySpeed   = 60,
+}
+
+local function GetRoot()
+	local c = LocalPlayer.Character
+	return c and c:FindFirstChild("HumanoidRootPart")
+end
+
+local function GetHum()
+	local c = LocalPlayer.Character
+	return c and c:FindFirstChildOfClass("Humanoid")
+end
+
+local function GetTool()
+	local c = LocalPlayer.Character
+	return c and c:FindFirstChildOfClass("Tool")
+end
+
 local function StartNoclip()
-	if noclipConn then noclipConn:Disconnect(); noclipConn = nil end
-	if not CONFIG.Noclip then
-		local char = LP.Character
-		if char then
-			for _, p in ipairs(char:GetDescendants()) do
-				if p:IsA("BasePart") then pcall(function() p.CanCollide = true end) end
-			end
-		end
-		return
-	end
+	if noclipConn then return end
 	noclipConn = RunService.Stepped:Connect(function()
-		if not CONFIG.Noclip then return end
-		local char = LP.Character
-		if not char then return end
-		for _, p in ipairs(char:GetDescendants()) do
-			if p:IsA("BasePart") then pcall(function() p.CanCollide = false end) end
+		local c = LocalPlayer.Character
+		if not c then return end
+		for _, p in ipairs(c:GetDescendants()) do
+			if p:IsA("BasePart") then p.CanCollide = false end
 		end
 	end)
 end
 
-local sg = Instance.new("ScreenGui")
-sg.Name = "Ontoy_EPT"
-sg.ResetOnSpawn = false
-sg.Parent = LP:WaitForChild("PlayerGui")
+local function StopNoclip()
+	if noclipConn then noclipConn:Disconnect() noclipConn = nil end
+end
 
-local C = {
-	BG         = Color3.fromRGB(10, 12, 18),
-	BG2        = Color3.fromRGB(16, 20, 28),
-	Accent     = Color3.fromRGB(100, 60, 255),
-	AccentDim  = Color3.fromRGB(60, 35, 160),
-	AccentGlow = Color3.fromRGB(140, 100, 255),
-	TextMain   = Color3.fromRGB(230, 225, 255),
-	TextSub    = Color3.fromRGB(110, 100, 150),
-	Stroke     = Color3.fromRGB(50, 40, 90),
-	ToggleOff  = Color3.fromRGB(35, 30, 50),
-	SliderFill = Color3.fromRGB(100, 60, 255),
-	SliderBG   = Color3.fromRGB(28, 24, 45),
-	Red        = Color3.fromRGB(255, 70, 70),
-	Green      = Color3.fromRGB(50, 210, 100),
-	Orange     = Color3.fromRGB(255, 160, 40),
+local function StartFly()
+	if flyConn then return end
+	local root = GetRoot()
+	if not root then return end
+
+	flyBodyVel = Instance.new("BodyVelocity")
+	flyBodyVel.Velocity = Vector3.zero
+	flyBodyVel.MaxForce = Vector3.new(1e5, 1e5, 1e5)
+	flyBodyVel.Parent = root
+
+	flyBodyGyro = Instance.new("BodyGyro")
+	flyBodyGyro.MaxTorque = Vector3.new(1e5, 1e5, 1e5)
+	flyBodyGyro.D = 100
+	flyBodyGyro.Parent = root
+
+	local hum = GetHum()
+	if hum then hum.PlatformStand = true end
+
+	flyConn = RunService.RenderStepped:Connect(function()
+		local r = GetRoot()
+		local h = GetHum()
+		if not r or not h then return end
+		h.PlatformStand = true
+
+		local dir = Vector3.zero
+		local cf  = Camera.CFrame
+
+		if UserInputService:IsKeyDown(Enum.KeyCode.W) then
+			dir = dir + cf.LookVector
+		end
+		if UserInputService:IsKeyDown(Enum.KeyCode.S) then
+			dir = dir - cf.LookVector
+		end
+		if UserInputService:IsKeyDown(Enum.KeyCode.A) then
+			dir = dir - cf.RightVector
+		end
+		if UserInputService:IsKeyDown(Enum.KeyCode.D) then
+			dir = dir + cf.RightVector
+		end
+		if UserInputService:IsKeyDown(Enum.KeyCode.Space) then
+			dir = dir + Vector3.new(0,1,0)
+		end
+		if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then
+			dir = dir - Vector3.new(0,1,0)
+		end
+
+		if dir.Magnitude > 0 then
+			dir = dir.Unit
+		end
+
+		flyBodyVel.Velocity = dir * CFG.FlySpeed
+		flyBodyGyro.CFrame  = Camera.CFrame
+	end)
+end
+
+local function StopFly()
+	if flyConn then flyConn:Disconnect() flyConn = nil end
+	if flyBodyVel  then flyBodyVel:Destroy()  flyBodyVel  = nil end
+	if flyBodyGyro then flyBodyGyro:Destroy() flyBodyGyro = nil end
+	local h = GetHum()
+	if h then h.PlatformStand = false end
+end
+
+local function PatchGun(tool)
+	if not tool then return end
+	local config = tool:FindFirstChild("Configuration") or tool:FindFirstChild("Config")
+	if config then
+		pcall(function()
+			if config:FindFirstChild("Spread")       then config.Spread.Value       = 0   end
+			if config:FindFirstChild("FireRate")      then config.FireRate.Value     = 0   end
+			if config:FindFirstChild("ReloadTime")    then config.ReloadTime.Value   = 0   end
+			if config:FindFirstChild("ClipSize")      then config.ClipSize.Value     = 999 end
+			if config:FindFirstChild("Damage")        then end
+		end)
+	end
+	local gui = tool:FindFirstChildWhichIsA("ScreenGui", true)
+	                or LocalPlayer.PlayerGui:FindFirstChild("WeaponGui")
+	pcall(function()
+		local ammo = tool:FindFirstChild("Ammo") or tool:FindFirstChild("ammo")
+		if ammo and ammo:IsA("IntValue") then ammo.Value = 999 end
+	end)
+end
+
+local function StartFastShoot()
+	if fastShootConn then return end
+	fastShootConn = RunService.Heartbeat:Connect(function()
+		local tool = GetTool()
+		if tool then PatchGun(tool) end
+	end)
+end
+
+local function StopFastShoot()
+	if fastShootConn then fastShootConn:Disconnect() fastShootConn = nil end
+end
+
+local function CreateESP(player)
+	local esp = {
+		Box       = Drawing.new("Square"),
+		NameTag   = Drawing.new("Text"),
+		HealthBar = Drawing.new("Square"),
+		Line      = Drawing.new("Line"),
+	}
+	esp.Box.Thickness  = 1
+	esp.Box.Color      = Color3.fromRGB(255,50,50)
+	esp.Box.Filled     = false
+	esp.Box.Visible    = false
+	esp.NameTag.Size   = 13
+	esp.NameTag.Color  = Color3.fromRGB(255,255,255)
+	esp.NameTag.Center = true
+	esp.NameTag.Outline      = true
+	esp.NameTag.OutlineColor = Color3.fromRGB(0,0,0)
+	esp.NameTag.Visible = false
+	esp.HealthBar.Thickness = 1
+	esp.HealthBar.Filled    = true
+	esp.HealthBar.Visible   = false
+	esp.Line.Thickness = 1
+	esp.Line.Color     = Color3.fromRGB(0,255,255)
+	esp.Line.Visible   = false
+	return esp
+end
+
+local function CleanupESP(p)
+	local esp = ESP_Objects[p]
+	if not esp then return end
+	esp.Box:Remove()
+	esp.NameTag:Remove()
+	esp.HealthBar:Remove()
+	esp.Line:Remove()
+	ESP_Objects[p] = nil
+end
+
+local function HideESP(esp)
+	esp.Box.Visible       = false
+	esp.NameTag.Visible   = false
+	esp.HealthBar.Visible = false
+	esp.Line.Visible      = false
+end
+
+local function HideAllESP()
+	for _, esp in pairs(ESP_Objects) do HideESP(esp) end
+end
+
+for _, p in ipairs(Players:GetPlayers()) do
+	if p ~= LocalPlayer then ESP_Objects[p] = CreateESP(p) end
+end
+Players.PlayerAdded:Connect(function(p)    ESP_Objects[p] = CreateESP(p) end)
+Players.PlayerRemoving:Connect(function(p) CleanupESP(p) end)
+
+local espEnabled     = false
+local tracerEnabled  = false
+
+local function RenderESP()
+	if not espEnabled then HideAllESP() return end
+	local localRoot = GetRoot()
+	if not localRoot then HideAllESP() return end
+
+	for player, esp in pairs(ESP_Objects) do
+		local char = player.Character
+		if not char then HideESP(esp) continue end
+		local root = char:FindFirstChild("HumanoidRootPart")
+		local hum  = char:FindFirstChild("Humanoid")
+		local head = char:FindFirstChild("Head")
+		if not (root and hum and head and hum.Health > 0) then HideESP(esp) continue end
+
+		local rs, onScreen = Camera:WorldToScreenPoint(root.Position)
+		local hs           = Camera:WorldToScreenPoint(head.Position)
+		if not onScreen then HideESP(esp) continue end
+
+		local height = math.max(math.abs(rs.Y - hs.Y) * 2, 10)
+		local width  = height * 0.5
+		local boxPos = Vector2.new(rs.X - width/2, rs.Y - height/2)
+
+		esp.Box.Size     = Vector2.new(width, height)
+		esp.Box.Position = boxPos
+		esp.Box.Visible  = true
+
+		local hpR = hum.Health / hum.MaxHealth
+		local barH = height * hpR
+		esp.HealthBar.Size     = Vector2.new(4, barH)
+		esp.HealthBar.Position = Vector2.new(boxPos.X - 7, boxPos.Y + (height - barH))
+		esp.HealthBar.Color    = Color3.fromRGB(
+			math.floor(255*(1-hpR)), math.floor(255*hpR), 0
+		)
+		esp.HealthBar.Visible = true
+
+		local dist = math.floor((root.Position - localRoot.Position).Magnitude)
+		esp.NameTag.Text     = player.Name .. " [" .. math.floor(hum.Health) .. "hp | " .. dist .. "m]"
+		esp.NameTag.Position = Vector2.new(rs.X, boxPos.Y - 16)
+		esp.NameTag.Visible  = true
+
+		if tracerEnabled then
+			local vp = Camera.ViewportSize
+			esp.Line.From    = Vector2.new(vp.X/2, vp.Y)
+			esp.Line.To      = Vector2.new(rs.X, rs.Y)
+			esp.Line.Visible = true
+		else
+			esp.Line.Visible = false
+		end
+	end
+end
+
+local REDZ = {
+	BG         = Color3.fromRGB(14,12,16),
+	BG2        = Color3.fromRGB(20,16,22),
+	Accent     = Color3.fromRGB(200,30,50),
+	AccentDim  = Color3.fromRGB(120,20,35),
+	AccentGlow = Color3.fromRGB(255,60,80),
+	TextMain   = Color3.fromRGB(240,220,225),
+	TextSub    = Color3.fromRGB(130,100,110),
+	Stroke     = Color3.fromRGB(60,30,40),
+	ToggleOff  = Color3.fromRGB(40,32,36),
+	SliderFill = Color3.fromRGB(200,30,50),
+	SliderBG   = Color3.fromRGB(35,28,32),
 }
 
-local win = Instance.new("Frame")
-win.Size = UDim2.new(0,500,0,440)
-win.Position = UDim2.new(0.5,-250,0.5,-220)
-win.BackgroundColor3 = C.BG
-win.BorderSizePixel = 0
-win.Active = true
-win.Draggable = false
-win.Parent = sg
-Instance.new("UICorner", win).CornerRadius = UDim.new(0,10)
-local ws = Instance.new("UIStroke", win)
-ws.Color = C.Stroke; ws.Thickness = 1.5
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name         = "PrisonHub"
+screenGui.ResetOnSpawn = false
+screenGui.Parent       = LocalPlayer:WaitForChild("PlayerGui")
 
-local titleBar = Instance.new("Frame", win)
-titleBar.Size = UDim2.new(1,0,0,42)
-titleBar.BackgroundColor3 = C.BG2
-titleBar.BorderSizePixel = 0
-titleBar.Active = true
+local mainWindow = Instance.new("Frame")
+mainWindow.Size             = UDim2.new(0,520,0,460)
+mainWindow.Position         = UDim2.new(0.5,-260,0.5,-230)
+mainWindow.BackgroundColor3 = REDZ.BG
+mainWindow.BorderSizePixel  = 0
+mainWindow.Active           = true
+mainWindow.Draggable        = false
+mainWindow.Parent           = screenGui
+Instance.new("UICorner", mainWindow).CornerRadius = UDim.new(0,10)
+local mStroke = Instance.new("UIStroke", mainWindow)
+mStroke.Color = REDZ.Stroke; mStroke.Thickness = 1.5
+
+local titleBar = Instance.new("Frame", mainWindow)
+titleBar.Size             = UDim2.new(1,0,0,42)
+titleBar.BackgroundColor3 = REDZ.BG2
+titleBar.BorderSizePixel  = 0
 Instance.new("UICorner", titleBar).CornerRadius = UDim.new(0,10)
 
-local drag, dragM, dragP = false, Vector2.zero, UDim2.new()
+local accentLine = Instance.new("Frame", titleBar)
+accentLine.Size             = UDim2.new(1,0,0,2)
+accentLine.Position         = UDim2.new(0,0,1,-2)
+accentLine.BackgroundColor3 = REDZ.Accent
+accentLine.BorderSizePixel  = 0
+
+local logoDot = Instance.new("Frame", titleBar)
+logoDot.Size             = UDim2.new(0,8,0,8)
+logoDot.Position         = UDim2.new(0,14,0.5,-4)
+logoDot.BackgroundColor3 = REDZ.AccentGlow
+logoDot.BorderSizePixel  = 0
+Instance.new("UICorner", logoDot).CornerRadius = UDim.new(0,4)
+
+local titleText = Instance.new("TextLabel", titleBar)
+titleText.Size                 = UDim2.new(1,-100,1,0)
+titleText.Position             = UDim2.new(0,30,0,0)
+titleText.BackgroundTransparency = 1
+titleText.Text                 = "PRISON HUB  <font color='#C81E32'>·</font>  Prison Life"
+titleText.RichText             = true
+titleText.TextColor3           = REDZ.TextMain
+titleText.Font                 = Enum.Font.GothamBold
+titleText.TextSize             = 13
+titleText.TextXAlignment       = Enum.TextXAlignment.Left
+
+local byLabel = Instance.new("TextLabel", titleBar)
+byLabel.Size                 = UDim2.new(0,60,1,0)
+byLabel.Position             = UDim2.new(0,200,0,0)
+byLabel.BackgroundTransparency = 1
+byLabel.Text                 = "prison life"
+byLabel.TextColor3           = REDZ.TextSub
+byLabel.Font                 = Enum.Font.Gotham
+byLabel.TextSize             = 11
+byLabel.TextXAlignment       = Enum.TextXAlignment.Left
+
+local dragging, dragStart, dragOrig = false, Vector2.zero, UDim2.new()
 titleBar.InputBegan:Connect(function(i)
 	if i.UserInputType == Enum.UserInputType.MouseButton1 then
-		drag = true; dragM = Vector2.new(i.Position.X, i.Position.Y); dragP = win.Position
+		dragging = true
+		dragStart = Vector2.new(i.Position.X, i.Position.Y)
+		dragOrig  = mainWindow.Position
 	end
 end)
 UserInputService.InputChanged:Connect(function(i)
-	if drag and i.UserInputType == Enum.UserInputType.MouseMovement then
-		local d = Vector2.new(i.Position.X, i.Position.Y) - dragM
-		win.Position = UDim2.new(dragP.X.Scale, dragP.X.Offset+d.X, dragP.Y.Scale, dragP.Y.Offset+d.Y)
+	if dragging and i.UserInputType == Enum.UserInputType.MouseMovement then
+		local d = Vector2.new(i.Position.X, i.Position.Y) - dragStart
+		mainWindow.Position = UDim2.new(
+			dragOrig.X.Scale, dragOrig.X.Offset + d.X,
+			dragOrig.Y.Scale, dragOrig.Y.Offset + d.Y
+		)
 	end
 end)
 UserInputService.InputEnded:Connect(function(i)
-	if i.UserInputType == Enum.UserInputType.MouseButton1 then drag = false end
+	if i.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false end
 end)
 
-local al = Instance.new("Frame", titleBar)
-al.Size = UDim2.new(1,0,0,2); al.Position = UDim2.new(0,0,1,-2)
-al.BackgroundColor3 = C.Accent; al.BorderSizePixel = 0
-
-local dot = Instance.new("Frame", titleBar)
-dot.Size = UDim2.new(0,8,0,8); dot.Position = UDim2.new(0,14,0.5,-4)
-dot.BackgroundColor3 = C.AccentGlow; dot.BorderSizePixel = 0
-Instance.new("UICorner", dot).CornerRadius = UDim.new(0,4)
-
-local titleLbl = Instance.new("TextLabel", titleBar)
-titleLbl.Size = UDim2.new(1,-140,1,0); titleLbl.Position = UDim2.new(0,30,0,0)
-titleLbl.BackgroundTransparency = 1
-titleLbl.Text = "ONTOY HUB  <font color='#6438FF'>·</font>  Elemental Powers Tycoon"
-titleLbl.RichText = true; titleLbl.TextColor3 = C.TextMain
-titleLbl.Font = Enum.Font.GothamBold; titleLbl.TextSize = 12
-titleLbl.TextXAlignment = Enum.TextXAlignment.Left
-
-local byLbl = Instance.new("TextLabel", titleBar)
-byLbl.Size = UDim2.new(0,60,1,0); byLbl.Position = UDim2.new(0,290,0,0)
-byLbl.BackgroundTransparency = 1; byLbl.Text = "by ontoy"
-byLbl.TextColor3 = C.TextSub; byLbl.Font = Enum.Font.Gotham
-byLbl.TextSize = 11; byLbl.TextXAlignment = Enum.TextXAlignment.Left
-
-local function WinBtn(xOff, bg, txt)
+local function MakeWinBtn(xOff, bg, txt)
 	local b = Instance.new("TextButton", titleBar)
-	b.Size = UDim2.new(0,26,0,26); b.Position = UDim2.new(1,xOff,0.5,-13)
-	b.BackgroundColor3 = bg; b.Text = txt; b.TextColor3 = Color3.fromRGB(255,255,255)
-	b.Font = Enum.Font.GothamBold; b.TextSize = 11; b.BorderSizePixel = 0
+	b.Size             = UDim2.new(0,26,0,26)
+	b.Position         = UDim2.new(1,xOff,0.5,-13)
+	b.BackgroundColor3 = bg
+	b.Text             = txt
+	b.TextColor3       = Color3.fromRGB(255,255,255)
+	b.Font             = Enum.Font.GothamBold
+	b.TextSize         = 11
+	b.BorderSizePixel  = 0
 	Instance.new("UICorner", b).CornerRadius = UDim.new(0,6)
 	return b
 end
-local closeBtn = WinBtn(-34, C.Red, "✕")
-local minBtn   = WinBtn(-66, C.ToggleOff, "—")
+local closeBtn    = MakeWinBtn(-34, REDZ.Accent,    "✕")
+local minimizeBtn = MakeWinBtn(-66, REDZ.ToggleOff, "—")
 
-local sidebar = Instance.new("Frame", win)
-sidebar.Size = UDim2.new(0,130,1,-42); sidebar.Position = UDim2.new(0,0,0,42)
-sidebar.BackgroundColor3 = C.BG2; sidebar.BorderSizePixel = 0
+local sidebar = Instance.new("Frame", mainWindow)
+sidebar.Size             = UDim2.new(0,140,1,-42)
+sidebar.Position         = UDim2.new(0,0,0,42)
+sidebar.BackgroundColor3 = REDZ.BG2
+sidebar.BorderSizePixel  = 0
 Instance.new("UICorner", sidebar).CornerRadius = UDim.new(0,10)
-Instance.new("UIStroke", sidebar).Color = C.Stroke
-local sbl = Instance.new("UIListLayout", sidebar)
-sbl.Padding = UDim.new(0,3); sbl.HorizontalAlignment = Enum.HorizontalAlignment.Center
+local sideStroke = Instance.new("UIStroke", sidebar)
+sideStroke.Color = REDZ.Stroke; sideStroke.Thickness = 1
+local sideLayout = Instance.new("UIListLayout", sidebar)
+sideLayout.Padding             = UDim.new(0,3)
+sideLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
 Instance.new("UIPadding", sidebar).PaddingTop = UDim.new(0,12)
 
-local cArea = Instance.new("Frame", win)
-cArea.Size = UDim2.new(1,-138,1,-50); cArea.Position = UDim2.new(0,134,0,46)
-cArea.BackgroundTransparency = 1; cArea.BorderSizePixel = 0
+local contentArea = Instance.new("Frame", mainWindow)
+contentArea.Size                 = UDim2.new(1,-148,1,-50)
+contentArea.Position             = UDim2.new(0,144,0,46)
+contentArea.BackgroundTransparency = 1
+contentArea.BorderSizePixel      = 0
 
-local scroll = Instance.new("ScrollingFrame", cArea)
-scroll.Size = UDim2.new(1,0,1,0); scroll.BackgroundTransparency = 1
-scroll.BorderSizePixel = 0; scroll.ScrollBarThickness = 3
-scroll.ScrollBarImageColor3 = C.AccentDim
-scroll.CanvasSize = UDim2.new(0,0,0,0); scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
-local scl = Instance.new("UIListLayout", scroll)
-scl.Padding = UDim.new(0,6); scl.HorizontalAlignment = Enum.HorizontalAlignment.Center
-Instance.new("UIPadding", scroll).PaddingTop = UDim.new(0,8)
+local contentScroll = Instance.new("ScrollingFrame", contentArea)
+contentScroll.Size                 = UDim2.new(1,0,1,0)
+contentScroll.BackgroundTransparency = 1
+contentScroll.BorderSizePixel      = 0
+contentScroll.ScrollBarThickness   = 3
+contentScroll.ScrollBarImageColor3 = REDZ.AccentDim
+contentScroll.CanvasSize           = UDim2.new(0,0,0,0)
+contentScroll.AutomaticCanvasSize  = Enum.AutomaticSize.Y
 
-local pages, sideBtns = {}, {}
+local contentLayout = Instance.new("UIListLayout", contentScroll)
+contentLayout.Padding             = UDim.new(0,6)
+contentLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+Instance.new("UIPadding", contentScroll).PaddingTop = UDim.new(0,8)
+
+local pages        = {}
+local sidebarBtns  = {}
 
 local function MakePage()
-	local pg = Instance.new("Frame", scroll)
-	pg.Size = UDim2.new(1,0,0,0); pg.AutomaticSize = Enum.AutomaticSize.Y
-	pg.BackgroundTransparency = 1; pg.BorderSizePixel = 0; pg.Visible = false
-	local l = Instance.new("UIListLayout", pg)
-	l.Padding = UDim.new(0,6); l.HorizontalAlignment = Enum.HorizontalAlignment.Center
+	local pg = Instance.new("Frame", contentScroll)
+	pg.Size                 = UDim2.new(1,0,0,0)
+	pg.AutomaticSize        = Enum.AutomaticSize.Y
+	pg.BackgroundTransparency = 1
+	pg.BorderSizePixel      = 0
+	pg.Visible              = false
+	local lay = Instance.new("UIListLayout", pg)
+	lay.Padding             = UDim.new(0,6)
+	lay.HorizontalAlignment = Enum.HorizontalAlignment.Center
 	Instance.new("UIPadding", pg).PaddingBottom = UDim.new(0,8)
 	return pg
 end
 
-local function MakeSideBtn(icon, label, id)
+local function MakeSidebarBtn(icon, label, id)
 	local btn = Instance.new("TextButton", sidebar)
-	btn.Size = UDim2.new(1,-14,0,38); btn.BackgroundTransparency = 1
-	btn.Text = ""; btn.BorderSizePixel = 0
+	btn.Size                 = UDim2.new(1,-14,0,38)
+	btn.BackgroundColor3     = REDZ.ToggleOff
+	btn.BackgroundTransparency = 1
+	btn.Text                 = ""
+	btn.BorderSizePixel      = 0
 	Instance.new("UICorner", btn).CornerRadius = UDim.new(0,7)
 	local bar = Instance.new("Frame", btn)
-	bar.Size = UDim2.new(0,3,0.6,0); bar.Position = UDim2.new(0,0,0.2,0)
-	bar.BackgroundColor3 = C.Accent; bar.BorderSizePixel = 0; bar.Visible = false
+	bar.Size             = UDim2.new(0,3,0.6,0)
+	bar.Position         = UDim2.new(0,0,0.2,0)
+	bar.BackgroundColor3 = REDZ.Accent
+	bar.BorderSizePixel  = 0
+	bar.Visible          = false
 	Instance.new("UICorner", bar).CornerRadius = UDim.new(0,2)
-	local ic = Instance.new("TextLabel", btn)
-	ic.Size = UDim2.new(0,22,1,0); ic.Position = UDim2.new(0,10,0,0)
-	ic.BackgroundTransparency = 1; ic.Text = icon
-	ic.TextColor3 = C.TextSub; ic.Font = Enum.Font.GothamBold; ic.TextSize = 14
-	local lb = Instance.new("TextLabel", btn)
-	lb.Size = UDim2.new(1,-38,1,0); lb.Position = UDim2.new(0,36,0,0)
-	lb.BackgroundTransparency = 1; lb.Text = label
-	lb.TextColor3 = C.TextSub; lb.Font = Enum.Font.Gotham; lb.TextSize = 12
-	lb.TextXAlignment = Enum.TextXAlignment.Left
-	sideBtns[id] = {btn=btn, icon=ic, label=lb, bar=bar}
+	local iconL = Instance.new("TextLabel", btn)
+	iconL.Size                 = UDim2.new(0,22,1,0)
+	iconL.Position             = UDim2.new(0,10,0,0)
+	iconL.BackgroundTransparency = 1
+	iconL.Text                 = icon
+	iconL.TextColor3           = REDZ.TextSub
+	iconL.Font                 = Enum.Font.GothamBold
+	iconL.TextSize             = 14
+	local labelL = Instance.new("TextLabel", btn)
+	labelL.Size                 = UDim2.new(1,-38,1,0)
+	labelL.Position             = UDim2.new(0,36,0,0)
+	labelL.BackgroundTransparency = 1
+	labelL.Text                 = label
+	labelL.TextColor3           = REDZ.TextSub
+	labelL.Font                 = Enum.Font.Gotham
+	labelL.TextSize             = 12
+	labelL.TextXAlignment       = Enum.TextXAlignment.Left
+	sidebarBtns[id] = {btn=btn, icon=iconL, label=labelL, bar=bar}
 	return btn
 end
 
-local function SetPage(id)
+local function SetActivePage(id)
 	for pid, pg in pairs(pages) do pg.Visible = (pid == id) end
-	for bid, sb in pairs(sideBtns) do
-		local a = (bid == id)
-		sb.btn.BackgroundTransparency = a and 0 or 1
-		sb.btn.BackgroundColor3 = a and Color3.fromRGB(18,14,34) or C.ToggleOff
-		sb.icon.TextColor3 = a and C.AccentGlow or C.TextSub
-		sb.label.TextColor3 = a and C.TextMain or C.TextSub
-		sb.bar.Visible = a
+	for bid, sb in pairs(sidebarBtns) do
+		local active = (bid == id)
+		sb.btn.BackgroundTransparency = active and 0 or 1
+		sb.btn.BackgroundColor3       = active and Color3.fromRGB(30,18,22) or REDZ.ToggleOff
+		sb.icon.TextColor3            = active and REDZ.AccentGlow or REDZ.TextSub
+		sb.label.TextColor3           = active and REDZ.TextMain   or REDZ.TextSub
+		sb.bar.Visible                = active
 	end
 end
 
-local function SecLabel(parent, text, color)
-	local l = Instance.new("TextLabel", parent)
-	l.Size = UDim2.new(1,-8,0,18); l.BackgroundTransparency = 1
-	l.Text = text; l.TextColor3 = color or C.Accent
-	l.Font = Enum.Font.GothamBold; l.TextSize = 10
-	l.TextXAlignment = Enum.TextXAlignment.Left
+local function MakeSectionLabel(parent, text)
+	local lbl = Instance.new("TextLabel", parent)
+	lbl.Size                 = UDim2.new(1,-8,0,18)
+	lbl.BackgroundTransparency = 1
+	lbl.Text                 = text
+	lbl.TextColor3           = REDZ.Accent
+	lbl.Font                 = Enum.Font.GothamBold
+	lbl.TextSize             = 10
+	lbl.TextXAlignment       = Enum.TextXAlignment.Left
 end
 
-local function Toggle(parent, label, sub, ac)
-	ac = ac or C.Accent
+local function MakeToggleRow(parent, label, sublabel, accentColor)
+	accentColor = accentColor or REDZ.Accent
 	local row = Instance.new("Frame", parent)
-	row.Size = UDim2.new(1,-8,0,52); row.BackgroundColor3 = C.BG2; row.BorderSizePixel = 0
+	row.Size             = UDim2.new(1,-8,0,52)
+	row.BackgroundColor3 = REDZ.BG2
+	row.BorderSizePixel  = 0
 	Instance.new("UICorner", row).CornerRadius = UDim.new(0,8)
-	local stroke = Instance.new("UIStroke", row); stroke.Color = C.Stroke; stroke.Thickness = 1
-	local tll = Instance.new("TextLabel", row)
-	tll.Size = UDim2.new(1,-60,0,22); tll.Position = UDim2.new(0,14,0,8)
-	tll.BackgroundTransparency = 1; tll.Text = label; tll.TextColor3 = C.TextMain
-	tll.Font = Enum.Font.GothamBold; tll.TextSize = 12; tll.TextXAlignment = Enum.TextXAlignment.Left
-	if sub then
-		local s = Instance.new("TextLabel", row)
-		s.Size = UDim2.new(1,-60,0,16); s.Position = UDim2.new(0,14,0,28)
-		s.BackgroundTransparency = 1; s.Text = sub; s.TextColor3 = C.TextSub
-		s.Font = Enum.Font.Gotham; s.TextSize = 10; s.TextXAlignment = Enum.TextXAlignment.Left
+	local stroke = Instance.new("UIStroke", row)
+	stroke.Color = REDZ.Stroke; stroke.Thickness = 1
+	local titleLbl = Instance.new("TextLabel", row)
+	titleLbl.Size                 = UDim2.new(1,-60,0,22)
+	titleLbl.Position             = UDim2.new(0,14,0,8)
+	titleLbl.BackgroundTransparency = 1
+	titleLbl.Text                 = label
+	titleLbl.TextColor3           = REDZ.TextMain
+	titleLbl.Font                 = Enum.Font.GothamBold
+	titleLbl.TextSize             = 12
+	titleLbl.TextXAlignment       = Enum.TextXAlignment.Left
+	if sublabel then
+		local sub = Instance.new("TextLabel", row)
+		sub.Size                 = UDim2.new(1,-60,0,16)
+		sub.Position             = UDim2.new(0,14,0,28)
+		sub.BackgroundTransparency = 1
+		sub.Text                 = sublabel
+		sub.TextColor3           = REDZ.TextSub
+		sub.Font                 = Enum.Font.Gotham
+		sub.TextSize             = 10
+		sub.TextXAlignment       = Enum.TextXAlignment.Left
 	end
-	local bg = Instance.new("Frame", row)
-	bg.Size = UDim2.new(0,36,0,20); bg.Position = UDim2.new(1,-48,0.5,-10)
-	bg.BackgroundColor3 = C.ToggleOff; bg.BorderSizePixel = 0
-	Instance.new("UICorner", bg).CornerRadius = UDim.new(0,10)
-	local knob = Instance.new("Frame", bg)
-	knob.Size = UDim2.new(0,14,0,14); knob.Position = UDim2.new(0,3,0.5,-7)
-	knob.BackgroundColor3 = C.TextSub; knob.BorderSizePixel = 0
+	local tBG = Instance.new("Frame", row)
+	tBG.Size             = UDim2.new(0,36,0,20)
+	tBG.Position         = UDim2.new(1,-48,0.5,-10)
+	tBG.BackgroundColor3 = REDZ.ToggleOff
+	tBG.BorderSizePixel  = 0
+	Instance.new("UICorner", tBG).CornerRadius = UDim.new(0,10)
+	local knob = Instance.new("Frame", tBG)
+	knob.Size             = UDim2.new(0,14,0,14)
+	knob.Position         = UDim2.new(0,3,0.5,-7)
+	knob.BackgroundColor3 = REDZ.TextSub
+	knob.BorderSizePixel  = 0
 	Instance.new("UICorner", knob).CornerRadius = UDim.new(0,7)
-	local btn = Instance.new("TextButton", bg)
-	btn.Size = UDim2.new(1,8,1,8); btn.Position = UDim2.new(0,-4,0,-4)
-	btn.BackgroundTransparency = 1; btn.Text = ""; btn.BorderSizePixel = 0
+	local hitbox = Instance.new("TextButton", tBG)
+	hitbox.Size                 = UDim2.new(1,8,1,8)
+	hitbox.Position             = UDim2.new(0,-4,0,-4)
+	hitbox.BackgroundTransparency = 1
+	hitbox.Text                 = ""
+	hitbox.BorderSizePixel      = 0
 	local state = false
-	local function Set(s)
+	local function SetState(s)
 		state = s
 		if s then
-			bg.BackgroundColor3 = ac; knob.BackgroundColor3 = Color3.fromRGB(255,255,255)
-			knob.Position = UDim2.new(1,-17,0.5,-7)
-			row.BackgroundColor3 = Color3.fromRGB(14,10,28); stroke.Color = C.AccentDim
+			tBG.BackgroundColor3  = accentColor
+			knob.BackgroundColor3 = Color3.fromRGB(255,255,255)
+			knob.Position         = UDim2.new(1,-17,0.5,-7)
+			row.BackgroundColor3  = Color3.fromRGB(24,14,18)
+			stroke.Color          = REDZ.AccentDim
 		else
-			bg.BackgroundColor3 = C.ToggleOff; knob.BackgroundColor3 = C.TextSub
-			knob.Position = UDim2.new(0,3,0.5,-7)
-			row.BackgroundColor3 = C.BG2; stroke.Color = C.Stroke
+			tBG.BackgroundColor3  = REDZ.ToggleOff
+			knob.BackgroundColor3 = REDZ.TextSub
+			knob.Position         = UDim2.new(0,3,0.5,-7)
+			row.BackgroundColor3  = REDZ.BG2
+			stroke.Color          = REDZ.Stroke
 		end
 	end
-	btn.MouseButton1Click:Connect(function() Set(not state) end)
-	return row, function() return state end, Set
+	hitbox.MouseButton1Click:Connect(function() SetState(not state) end)
+	return function() return state end, SetState
 end
 
-local function Slider(parent, label, sub, dMin, dMax, initVal, unit, onChange)
-	local initPct = (initVal - dMin) / (dMax - dMin)
+local function MakeSliderRow(parent, label, dMin, dMax, initPct, unit, onChanged)
 	local row = Instance.new("Frame", parent)
-	row.Size = UDim2.new(1,-8,0,72); row.BackgroundColor3 = C.BG2; row.BorderSizePixel = 0
+	row.Size             = UDim2.new(1,-8,0,66)
+	row.BackgroundColor3 = REDZ.BG2
+	row.BorderSizePixel  = 0
 	Instance.new("UICorner", row).CornerRadius = UDim.new(0,8)
-	Instance.new("UIStroke", row).Color = C.Stroke
-	local tll = Instance.new("TextLabel", row)
-	tll.Size = UDim2.new(1,-80,0,20); tll.Position = UDim2.new(0,14,0,8)
-	tll.BackgroundTransparency = 1; tll.Text = label; tll.TextColor3 = C.TextMain
-	tll.Font = Enum.Font.GothamBold; tll.TextSize = 12; tll.TextXAlignment = Enum.TextXAlignment.Left
-	if sub then
-		local s = Instance.new("TextLabel", row)
-		s.Size = UDim2.new(1,-80,0,14); s.Position = UDim2.new(0,14,0,26)
-		s.BackgroundTransparency = 1; s.Text = sub; s.TextColor3 = C.TextSub
-		s.Font = Enum.Font.Gotham; s.TextSize = 10; s.TextXAlignment = Enum.TextXAlignment.Left
-	end
-	local vl = Instance.new("TextLabel", row)
-	vl.Size = UDim2.new(0,70,0,20); vl.Position = UDim2.new(1,-78,0,8)
-	vl.BackgroundTransparency = 1; vl.Font = Enum.Font.GothamBold; vl.TextSize = 12
-	vl.TextColor3 = C.AccentGlow; vl.TextXAlignment = Enum.TextXAlignment.Right
-	local sbg = Instance.new("Frame", row)
-	sbg.Size = UDim2.new(1,-28,0,5); sbg.Position = UDim2.new(0,14,0,50)
-	sbg.BackgroundColor3 = C.SliderBG; sbg.BorderSizePixel = 0
-	Instance.new("UICorner", sbg).CornerRadius = UDim.new(0,3)
-	local hit = Instance.new("TextButton", sbg)
-	hit.Size = UDim2.new(1,0,0,28); hit.Position = UDim2.new(0,0,0.5,-14)
-	hit.BackgroundTransparency = 1; hit.Text = ""; hit.BorderSizePixel = 0; hit.ZIndex = 5
-	local fill = Instance.new("Frame", sbg)
-	fill.Size = UDim2.new(initPct,0,1,0); fill.BackgroundColor3 = C.SliderFill; fill.BorderSizePixel = 0
+	local stroke = Instance.new("UIStroke", row)
+	stroke.Color = REDZ.Stroke; stroke.Thickness = 1
+	local titleLbl = Instance.new("TextLabel", row)
+	titleLbl.Size                 = UDim2.new(1,-80,0,20)
+	titleLbl.Position             = UDim2.new(0,14,0,8)
+	titleLbl.BackgroundTransparency = 1
+	titleLbl.Text                 = label
+	titleLbl.TextColor3           = REDZ.TextMain
+	titleLbl.Font                 = Enum.Font.GothamBold
+	titleLbl.TextSize             = 12
+	titleLbl.TextXAlignment       = Enum.TextXAlignment.Left
+	local valLbl = Instance.new("TextLabel", row)
+	valLbl.Size                 = UDim2.new(0,70,0,20)
+	valLbl.Position             = UDim2.new(1,-78,0,8)
+	valLbl.BackgroundTransparency = 1
+	valLbl.Font                 = Enum.Font.GothamBold
+	valLbl.TextSize             = 12
+	valLbl.TextColor3           = REDZ.AccentGlow
+	valLbl.TextXAlignment       = Enum.TextXAlignment.Right
+	local sliderBG = Instance.new("Frame", row)
+	sliderBG.Size             = UDim2.new(1,-28,0,5)
+	sliderBG.Position         = UDim2.new(0,14,0,42)
+	sliderBG.BackgroundColor3 = REDZ.SliderBG
+	sliderBG.BorderSizePixel  = 0
+	Instance.new("UICorner", sliderBG).CornerRadius = UDim.new(0,3)
+	local fill = Instance.new("Frame", sliderBG)
+	fill.Size             = UDim2.new(initPct,0,1,0)
+	fill.BackgroundColor3 = REDZ.SliderFill
+	fill.BorderSizePixel  = 0
 	Instance.new("UICorner", fill).CornerRadius = UDim.new(0,3)
-	local knob = Instance.new("Frame", sbg)
-	knob.Size = UDim2.new(0,14,0,14); knob.Position = UDim2.new(initPct,-7,0.5,-7)
-	knob.BackgroundColor3 = Color3.fromRGB(255,255,255); knob.BorderSizePixel = 0
+	local knob = Instance.new("Frame", sliderBG)
+	knob.Size             = UDim2.new(0,14,0,14)
+	knob.Position         = UDim2.new(initPct,-7,0.5,-7)
+	knob.BackgroundColor3 = Color3.fromRGB(255,255,255)
+	knob.BorderSizePixel  = 0
 	Instance.new("UICorner", knob).CornerRadius = UDim.new(0,7)
-	Instance.new("UIStroke", knob).Color = C.Accent
-	local dragS = false
+	local kr = Instance.new("UIStroke", knob)
+	kr.Color = REDZ.Accent; kr.Thickness = 2
+	local hitbox = Instance.new("TextButton", sliderBG)
+	hitbox.Size                 = UDim2.new(1,0,0,28)
+	hitbox.Position             = UDim2.new(0,0,0.5,-14)
+	hitbox.BackgroundTransparency = 1
+	hitbox.Text                 = ""
+	hitbox.BorderSizePixel      = 0
+	hitbox.ZIndex               = 5
+	local draggingSlider = false
 	local function Compute(px)
-		local pct = math.clamp((px - sbg.AbsolutePosition.X)/sbg.AbsoluteSize.X, 0, 1)
-		return pct, math.floor(dMin + (dMax-dMin)*pct)
+		local bg  = sliderBG.AbsolutePosition.X
+		local bw  = sliderBG.AbsoluteSize.X
+		local pct = math.clamp((px - bg) / bw, 0, 1)
+		return pct, math.floor(dMin + (dMax - dMin) * pct)
 	end
 	local function Apply(pct, val)
-		fill.Size = UDim2.new(pct,0,1,0); knob.Position = UDim2.new(pct,-7,0.5,-7)
-		vl.Text = val..(unit or ""); if onChange then onChange(val) end
+		fill.Size     = UDim2.new(pct, 0, 1, 0)
+		knob.Position = UDim2.new(pct, -7, 0.5, -7)
+		valLbl.Text   = tostring(val) .. (unit or "")
+		if onChanged then onChanged(val) end
 	end
-	Apply(initPct, initVal)
-	hit.MouseButton1Down:Connect(function() dragS = true end)
+	Apply(initPct, math.floor(dMin + (dMax - dMin) * initPct))
+	hitbox.MouseButton1Down:Connect(function() draggingSlider = true end)
 	UserInputService.InputChanged:Connect(function(i)
-		if dragS and (i.UserInputType == Enum.UserInputType.MouseMovement
-			or i.UserInputType == Enum.UserInputType.Touch) then
-			local p,v = Compute(i.Position.X); Apply(p,v)
+		if not draggingSlider then return end
+		if i.UserInputType == Enum.UserInputType.MouseMovement
+			or i.UserInputType == Enum.UserInputType.Touch then
+			Apply(Compute(i.Position.X))
 		end
 	end)
 	UserInputService.InputEnded:Connect(function(i)
 		if i.UserInputType == Enum.UserInputType.MouseButton1
-		or i.UserInputType == Enum.UserInputType.Touch then dragS = false end
+			or i.UserInputType == Enum.UserInputType.Touch then
+			draggingSlider = false
+		end
 	end)
-	hit.MouseButton1Click:Connect(function()
-		local m = UserInputService:GetMouseLocation()
-		local p,v = Compute(m.X); Apply(p,v)
+	hitbox.MouseButton1Click:Connect(function()
+		Apply(Compute(UserInputService:GetMouseLocation().X))
 	end)
 end
 
-local pgCombat = MakePage(); pages["combat"]   = pgCombat
-local pgMove   = MakePage(); pages["movement"] = pgMove
-local pgMisc   = MakePage(); pages["misc"]     = pgMisc
+local combatPage = MakePage(); pages["combat"] = combatPage
+local combatBtn  = MakeSidebarBtn("🔫", "Combat", "combat")
 
-local sbCombat = MakeSideBtn("⚔",  "Combat",   "combat")
-local sbMove   = MakeSideBtn("🏃", "Movement", "movement")
-local sbMisc   = MakeSideBtn("⚙",  "Misc",     "misc")
+MakeSectionLabel(combatPage, "GUN")
+local fastShootGet, _ = MakeToggleRow(combatPage, "Rapid Fire", "No spread + fast fire rate + infinite ammo")
 
-SecLabel(pgCombat, "KILL AURA", C.Orange)
-local _, aaGet, _ = Toggle(pgCombat, "Auto Attack", "Fire RemoteEvent serangan ke player dalam range", C.Orange)
-Slider(pgCombat, "Attack Range", "Radius kill aura (stud)", 5, 100, CONFIG.AttackRange, " stud", function(v)
-	CONFIG.AttackRange = v
+local movePage = MakePage(); pages["move"] = movePage
+local moveBtn  = MakeSidebarBtn("🏃", "Movement", "move")
+
+MakeSectionLabel(movePage, "SPEED")
+local fastRunGet, _  = MakeToggleRow(movePage, "Fast Run", "Override WalkSpeed setiap frame")
+MakeSliderRow(movePage, "Walk Speed", 16, 500, 0.07, " ws", function(val)
+	CFG.WalkSpeed = val
 end)
 
-SecLabel(pgCombat, "SKILL", C.Accent)
-local _, ncGet, _ = Toggle(pgCombat, "No Cooldown", "Namecall hook — bypass cooldown skill/ability", C.Accent)
-
-SecLabel(pgMove, "WALK SPEED")
-local _, frGet, _ = Toggle(pgMove, "Fast Run", "WalkSpeed lock — reset-proof")
-Slider(pgMove, "Walk Speed", "Default: 16, Max: 300", 16, 300, CONFIG.WalkSpeed, " stud/s", function(v)
-	CONFIG.WalkSpeed = v
-	if CONFIG.FastRun then ApplyWS() end
+MakeSectionLabel(movePage, "JUMP")
+local highJumpGet, _ = MakeToggleRow(movePage, "High Jump", "Override JumpPower setiap frame")
+MakeSliderRow(movePage, "Jump Power", 50, 500, 0.06, " jp", function(val)
+	CFG.JumpPower = val
 end)
 
-SecLabel(pgMove, "JUMP")
-local _, hjGet, _ = Toggle(pgMove, "High Jump", "JumpPower lock + JumpRequest hook")
-Slider(pgMove, "Jump Power", "Default: 50, Max: 300", 50, 300, CONFIG.JumpPower, "", function(v)
-	CONFIG.JumpPower = v
-	if CONFIG.HighJump then ApplyJP() end
+MakeSectionLabel(movePage, "FLY")
+local flyGet, _      = MakeToggleRow(movePage, "Fly Mode", "WASD + Space/Shift — terbang bebas")
+MakeSliderRow(movePage, "Fly Speed", 10, 300, 0.17, " stud/s", function(val)
+	CFG.FlySpeed = val
 end)
 
-SecLabel(pgMisc, "MOVEMENT HACK")
-local _, ncClipGet, _ = Toggle(pgMisc, "Noclip", "RunService.Stepped — CanCollide false tiap frame", C.Green)
+MakeSectionLabel(movePage, "NOCLIP")
+local noclipGet, _   = MakeToggleRow(movePage, "No Clip", "CanCollide = false semua part karakter")
 
-local function Wire(getter, key, onOn, onOff)
-	RunService.Heartbeat:Connect(function()
-		local s = getter()
-		if CONFIG[key] ~= s then
-			CONFIG[key] = s
-			if s then if onOn  then onOn()  end
-			else      if onOff then onOff() end end
-		end
-	end)
-end
+local visualPage = MakePage(); pages["visual"] = visualPage
+local visualBtn  = MakeSidebarBtn("👁", "Visual", "visual")
 
-Wire(aaGet,     "AutoAttack")
-Wire(ncGet,     "NoCooldown")
-Wire(frGet,     "FastRun",  StartFastRun,  StartFastRun)
-Wire(hjGet,     "HighJump", StartHighJump, StartHighJump)
-Wire(ncClipGet, "Noclip",   StartNoclip,   StartNoclip)
+MakeSectionLabel(visualPage, "ESP")
+local espGet, _      = MakeToggleRow(visualPage, "ESP", "Box, health bar, nama + jarak semua player")
+local tracerGet, _   = MakeToggleRow(visualPage, "Tracers", "Garis dari bawah layar ke semua player")
 
-sbCombat.MouseButton1Click:Connect(function() SetPage("combat")   end)
-sbMove.MouseButton1Click:Connect(function()   SetPage("movement") end)
-sbMisc.MouseButton1Click:Connect(function()   SetPage("misc")     end)
-SetPage("combat")
+RunService.RenderStepped:Connect(function()
+	local hum  = GetHum()
+	local root = GetRoot()
 
-local vis = true
-minBtn.MouseButton1Click:Connect(function()
-	vis = not vis
-	sidebar.Visible = vis; cArea.Visible = vis
-	win.Size = vis and UDim2.new(0,500,0,440) or UDim2.new(0,500,0,42)
-end)
-closeBtn.MouseButton1Click:Connect(function()
-	CONFIG.AutoAttack = false; CONFIG.NoCooldown = false
-	CONFIG.FastRun = false; CONFIG.HighJump = false; CONFIG.Noclip = false
-	local _, _, hum = GetChar()
-	if hum then pcall(function() hum.WalkSpeed = 16; hum.JumpPower = 50 end) end
-	if wsConn     then wsConn:Disconnect()     end
-	if jpConn     then jpConn:Disconnect()     end
-	if ijConn     then ijConn:Disconnect()     end
-	if noclipConn then noclipConn:Disconnect() end
-	local char = LP.Character
-	if char then
-		for _, p in ipairs(char:GetDescendants()) do
-			if p:IsA("BasePart") then pcall(function() p.CanCollide = true end) end
-		end
+	if fastShootGet() then StartFastShoot() else StopFastShoot() end
+
+	if fastRunGet() and hum then
+		hum.WalkSpeed = CFG.WalkSpeed
+	elseif not fastRunGet() and hum then
+		hum.WalkSpeed = 16
 	end
-	sg:Destroy()
+
+	if highJumpGet() and hum then
+		hum.JumpPower = CFG.JumpPower
+	elseif not highJumpGet() and hum then
+		hum.JumpPower = 50
+	end
+
+	if flyGet() then
+		if not flyConn then StartFly() end
+	else
+		if flyConn then StopFly() end
+	end
+
+	if noclipGet() then
+		if not noclipConn then StartNoclip() end
+	else
+		if noclipConn then StopNoclip() end
+	end
+
+	espEnabled    = espGet()
+	tracerEnabled = tracerGet()
+	RenderESP()
 end)
 
-LP.CharacterAdded:Connect(function()
-	task.wait(1)
-	attackRemote = nil
-	if CONFIG.FastRun  then StartFastRun()  end
-	if CONFIG.HighJump then StartHighJump() end
-	if CONFIG.Noclip   then StartNoclip()   end
+combatBtn.MouseButton1Click:Connect(function() SetActivePage("combat") end)
+moveBtn.MouseButton1Click:Connect(function()   SetActivePage("move")   end)
+visualBtn.MouseButton1Click:Connect(function() SetActivePage("visual") end)
+SetActivePage("combat")
+
+local contentVisible = true
+minimizeBtn.MouseButton1Click:Connect(function()
+	contentVisible = not contentVisible
+	sidebar.Visible      = contentVisible
+	contentArea.Visible  = contentVisible
+	mainWindow.Size = contentVisible
+		and UDim2.new(0,520,0,460)
+		or  UDim2.new(0,520,0,42)
 end)
 
-RunService.Heartbeat:Connect(function()
-	TickAutoAttack()
+closeBtn.MouseButton1Click:Connect(function()
+	StopFastShoot()
+	StopFly()
+	StopNoclip()
+	HideAllESP()
+	local h = GetHum()
+	if h then h.WalkSpeed = 16; h.JumpPower = 50; h.PlatformStand = false end
+	screenGui:Destroy()
+end)
+
+LocalPlayer.CharacterAdded:Connect(function(char)
+	LocalCharacter = char
+	LocalRoot      = char:WaitForChild("HumanoidRootPart")
+	LocalHumanoid  = char:WaitForChild("Humanoid")
+	if flyConn then StopFly() end
+	currentFarmMob = nil
 end)
