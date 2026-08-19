@@ -5,6 +5,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
 local VirtualUser = game:GetService("VirtualUser")
+local Lighting = game:GetService("Lighting")
 local Camera = Workspace.CurrentCamera
 
 local LocalPlayer = Players.LocalPlayer
@@ -32,6 +33,23 @@ local CONFIG = {
 	FarmHoverHeight = 8.5,
 }
 
+-- ── OPTIMIZER STATE ────────────────────────────────────────────────────────────
+local OPT = {
+	removeNPCEffectsConn = nil,
+	mapShadowsConn       = nil,
+	lightingEffectsConn  = nil,
+	autoRamConn          = nil,
+	stretchValue         = 1.0,
+	baseFOV              = Camera.FieldOfView,
+	qualityLevel         = 1,
+}
+
+local QUALITY_LEVELS = {
+	Enum.QualityLevel.Level01,
+	Enum.QualityLevel.Level05,
+	Enum.QualityLevel.Level10,
+}
+
 local BASE_SPEED    = 16
 local MAX_SPEED     = 500
 local MIN_HITBOX    = 4
@@ -47,9 +65,9 @@ local dashConn          = nil
 local fastAttackConn    = nil
 local lastAttackTick    = 0
 local farmConn          = nil
-local attackLoopRunning = false   -- flag attack loop terpisah
+local attackLoopRunning = false
 local currentFarmTween  = nil
-local currentFarmMob    = nil     -- shared target antara movement loop & attack loop
+local currentFarmMob    = nil
 
 local RegisterAttack = nil
 local CommF = nil
@@ -98,20 +116,15 @@ local function GetFarmData()
 	end
 	local sea = World3 and 3 or (World2 and 2 or 1)
 	return {
-		Sea = sea,
-		MinLvl = level, MaxLvl = level,
+		Sea = sea, MinLvl = level, MaxLvl = level,
 		Island = World3 and "Sea 3" or (World2 and "Sea 2" or "Sea 1"),
-		MobFolder = "Enemies",
-		MobName = Mon,
-		QuestName = NameQuest,
-		QuestNum = LevelQuest,
-		NPCCFrame = CFrameQuest,
-		MobCFrame = CFrameMon,
+		MobFolder = "Enemies", MobName = Mon,
+		QuestName = NameQuest, QuestNum = LevelQuest,
+		NPCCFrame = CFrameQuest, MobCFrame = CFrameMon,
 	}, level
 end
 
 local noclipConn = nil
-
 local function StartNoclip()
 	if noclipConn then return end
 	noclipConn = RunService.Stepped:Connect(function()
@@ -122,7 +135,6 @@ local function StartNoclip()
 		end
 	end)
 end
-
 local function StopNoclip()
 	if CONFIG.Mode9 or CONFIG.Mode10 then return end
 	if noclipConn then noclipConn:Disconnect() noclipConn = nil end
@@ -195,10 +207,6 @@ local function FindNearestMob(mobName, mobFolder)
 	return best
 end
 
--- ── ATTACK LOOP (task.spawn terpisah dari movement loop) ─────────────────────
--- Xeno safe: hanya tool:Activate() + VirtualUser:ClickButton1 + RegisterAttack:FireServer
--- Tidak ada VirtualInputManager, tidak ada getgc
-
 local function StartAttackLoop()
 	if attackLoopRunning then return end
 	attackLoopRunning = true
@@ -206,21 +214,15 @@ local function StartAttackLoop()
 		while attackLoopRunning do
 			task.wait(0.1)
 			if not CONFIG.Mode9 then continue end
-
 			local mob = currentFarmMob
 			if not mob then continue end
-
 			local mh = mob:FindFirstChildOfClass("Humanoid")
 			local mr = mob:FindFirstChild("HumanoidRootPart")
 			if not mh or not mr or mh.Health <= 0 then continue end
-
 			local char = LocalPlayer.Character
 			if not char then continue end
-
 			local hum = char:FindFirstChildOfClass("Humanoid")
 			if not hum or hum.Health <= 0 then continue end
-
-			-- equip tool kalau belum
 			local tool = char:FindFirstChildOfClass("Tool")
 			if not tool then
 				local bt = LocalPlayer.Backpack:FindFirstChildOfClass("Tool")
@@ -230,26 +232,15 @@ local function StartAttackLoop()
 					tool = char:FindFirstChildOfClass("Tool")
 				end
 			end
-
-			if not tool then
-				farmStatus = "No tool equipped"
-				continue
-			end
-
-			-- activate tool (Xeno safe)
+			if not tool then farmStatus = "No tool equipped" continue end
 			pcall(function() tool:Activate() end)
-
-			-- VirtualUser click (Xeno safe, tidak pakai VirtualInputManager)
 			pcall(function()
 				VirtualUser:CaptureController()
 				VirtualUser:ClickButton1(Vector2.new(50, 50), Camera.CFrame)
 			end)
-
-			-- RegisterAttack:FireServer langsung ke root mob
 			if RegisterAttack then
 				pcall(function() RegisterAttack:FireServer(mr) end)
 			end
-
 			farmStatus = "Nyerang " .. tostring(mob.Name)
 		end
 	end)
@@ -260,13 +251,10 @@ local function StopAttackLoop()
 	currentFarmMob    = nil
 end
 
--- ── FARM STATE MACHINE ────────────────────────────────────────────────────────
-
 local FARM_STATE = {
 	IDLE="idle", GO_QUEST="go_quest", TAKE_QUEST="take_quest",
 	GO_MOB="go_mob", ATTACK="attack", WAIT_SPAWN="wait_spawn",
 }
-
 local farmState      = FARM_STATE.IDLE
 local waitingFly     = false
 local waitSpawnTimer = 0
@@ -277,174 +265,76 @@ local QUEST_TIMEOUT   = 3.0
 
 local function StartFarm()
 	if farmConn then farmConn:Disconnect() farmConn = nil end
-	farmState       = FARM_STATE.GO_QUEST
-	waitingFly      = false
-	waitSpawnTimer  = 0
-	lastQuestCall   = 0
-	questStuckTimer = 0
-	currentFarmMob  = nil
-	farmStatus      = "Starting..."
+	farmState = FARM_STATE.GO_QUEST
+	waitingFly = false; waitSpawnTimer = 0; lastQuestCall = 0; questStuckTimer = 0
+	currentFarmMob = nil; farmStatus = "Starting..."
 	StartAttackLoop()
-
 	farmConn = RunService.Heartbeat:Connect(function(dt)
 		if not CONFIG.Mode9 then return end
 		if waitingFly then return end
-
 		local char = LocalPlayer.Character
 		local root = char and char:FindFirstChild("HumanoidRootPart")
 		if not root then return end
-
 		local farmData, level = GetFarmData()
-		if not farmData then
-			farmStatus = "Level " .. tostring(level) .. " tidak ada di database"
-			return
-		end
-
-		-- ── GO_QUEST ──────────────────────────────────────────────────────────
+		if not farmData then farmStatus = "Level " .. tostring(level) .. " tidak ada di database" return end
 		if farmState == FARM_STATE.GO_QUEST then
-			currentFarmMob  = nil
-			questStuckTimer = 0
-			if HasActiveQuest() then
-				farmState  = FARM_STATE.GO_MOB
-				farmStatus = "Quest aktif — hunting"
-				return
-			end
+			currentFarmMob = nil; questStuckTimer = 0
+			if HasActiveQuest() then farmState = FARM_STATE.GO_MOB; farmStatus = "Quest aktif — hunting" return end
 			local npcPos = farmData.NPCCFrame.Position
 			local xzDist = Vector2.new(npcPos.X - root.Position.X, npcPos.Z - root.Position.Z).Magnitude
 			if xzDist > 20 then
-				farmStatus = "Terbang ke NPC quest..."
-				waitingFly = true
-				FlyTo(farmData.NPCCFrame, function()
-					waitingFly = false
-					farmState  = FARM_STATE.TAKE_QUEST
-				end)
-			else
-				farmState = FARM_STATE.TAKE_QUEST
-			end
-
-		-- ── TAKE_QUEST ────────────────────────────────────────────────────────
+				farmStatus = "Terbang ke NPC quest..."; waitingFly = true
+				FlyTo(farmData.NPCCFrame, function() waitingFly = false; farmState = FARM_STATE.TAKE_QUEST end)
+			else farmState = FARM_STATE.TAKE_QUEST end
 		elseif farmState == FARM_STATE.TAKE_QUEST then
-			questStuckTimer = questStuckTimer + dt
-			currentFarmMob  = nil
-
-			if HasActiveQuest() then
-				farmState       = FARM_STATE.GO_MOB
-				questStuckTimer = 0
-				farmStatus      = "Quest diterima!"
-				return
-			end
-
-			-- timeout bypass
-			if questStuckTimer >= QUEST_TIMEOUT then
-				farmState       = FARM_STATE.GO_MOB
-				questStuckTimer = 0
-				farmStatus      = "Quest timeout — force GO_MOB"
-				return
-			end
-
+			questStuckTimer = questStuckTimer + dt; currentFarmMob = nil
+			if HasActiveQuest() then farmState = FARM_STATE.GO_MOB; questStuckTimer = 0; farmStatus = "Quest diterima!" return end
+			if questStuckTimer >= QUEST_TIMEOUT then farmState = FARM_STATE.GO_MOB; questStuckTimer = 0; farmStatus = "Quest timeout — force GO_MOB" return end
 			local npcPos = farmData.NPCCFrame.Position
 			local xzDist = Vector2.new(npcPos.X - root.Position.X, npcPos.Z - root.Position.Z).Magnitude
-			if xzDist > 30 then
-				farmState       = FARM_STATE.GO_QUEST
-				questStuckTimer = 0
-				return
-			end
-
-			-- anchor hover di NPC biar gak jatuh tembus map (noclip protection)
+			if xzDist > 30 then farmState = FARM_STATE.GO_QUEST; questStuckTimer = 0 return end
 			local hoverY = math.max(npcPos.Y + 10, MIN_FLY_Y)
 			SetPlatformStand(true)
 			root.CFrame = CFrame.new(Vector3.new(npcPos.X, hoverY, npcPos.Z))
 			root.AssemblyLinearVelocity = Vector3.zero
-
-			-- debounce StartQuest call
 			local now = tick()
 			if now - lastQuestCall < QUEST_COOLDOWN then return end
 			lastQuestCall = now
-
 			farmStatus = "Ambil quest: " .. farmData.QuestName
-			if CommF then
-				pcall(function()
-					CommF:InvokeServer("StartQuest", farmData.QuestName, farmData.QuestNum)
-				end)
-			end
-
-		-- ── GO_MOB ────────────────────────────────────────────────────────────
+			if CommF then pcall(function() CommF:InvokeServer("StartQuest", farmData.QuestName, farmData.QuestNum) end) end
 		elseif farmState == FARM_STATE.GO_MOB then
-			currentFarmMob  = nil
-			questStuckTimer = 0
-			if not HasActiveQuest() then
-				farmState  = FARM_STATE.GO_QUEST
-				farmStatus = "Quest selesai — ambil baru"
-				return
-			end
+			currentFarmMob = nil; questStuckTimer = 0
+			if not HasActiveQuest() then farmState = FARM_STATE.GO_QUEST; farmStatus = "Quest selesai — ambil baru" return end
 			local mob = FindNearestMob(farmData.MobName, farmData.MobFolder)
-			if not mob then
-				farmState      = FARM_STATE.WAIT_SPAWN
-				waitSpawnTimer = 0
-				farmStatus     = "Nunggu mob spawn..."
-				return
-			end
+			if not mob then farmState = FARM_STATE.WAIT_SPAWN; waitSpawnTimer = 0; farmStatus = "Nunggu mob spawn..." return end
 			local mr = mob:FindFirstChild("HumanoidRootPart")
 			if not mr then farmStatus = "Mob no root" return end
-			local mobPos  = mr.Position
-			local hoverY  = math.max(mobPos.Y + CONFIG.FarmHoverHeight, MIN_FLY_Y)
+			local mobPos = mr.Position
+			local hoverY = math.max(mobPos.Y + CONFIG.FarmHoverHeight, MIN_FLY_Y)
 			local hoverCF = CFrame.new(Vector3.new(mobPos.X, hoverY, mobPos.Z))
 			if (hoverCF.Position - root.Position).Magnitude > 8 then
-				farmStatus = "Terbang ke " .. farmData.MobName .. "..."
-				waitingFly = true
-				FlyTo(hoverCF, function()
-					waitingFly = false
-					farmState  = FARM_STATE.ATTACK
-				end)
-			else
-				farmState = FARM_STATE.ATTACK
-			end
-
-		-- ── ATTACK (movement only — serangan dihandle attack loop terpisah) ───
+				farmStatus = "Terbang ke " .. farmData.MobName .. "..."; waitingFly = true
+				FlyTo(hoverCF, function() waitingFly = false; farmState = FARM_STATE.ATTACK end)
+			else farmState = FARM_STATE.ATTACK end
 		elseif farmState == FARM_STATE.ATTACK then
-			if not HasActiveQuest() then
-				currentFarmMob = nil
-				farmState      = FARM_STATE.GO_QUEST
-				farmStatus     = "Quest selesai — ambil baru"
-				return
-			end
+			if not HasActiveQuest() then currentFarmMob = nil; farmState = FARM_STATE.GO_QUEST; farmStatus = "Quest selesai — ambil baru" return end
 			local mob = FindNearestMob(farmData.MobName, farmData.MobFolder)
 			if not mob or not mob:FindFirstChild("HumanoidRootPart") then
-				currentFarmMob = nil
-				farmState      = FARM_STATE.WAIT_SPAWN
-				waitSpawnTimer = 0
-				farmStatus     = "Mob mati — nunggu respawn"
-				return
-			end
-
-			local mr     = mob:FindFirstChild("HumanoidRootPart")
+				currentFarmMob = nil; farmState = FARM_STATE.WAIT_SPAWN; waitSpawnTimer = 0; farmStatus = "Mob mati — nunggu respawn" return end
+			local mr = mob:FindFirstChild("HumanoidRootPart")
 			local mobPos = mr.Position
-
-			-- dynamic jitter offset: anti-deteksi cheat statis dari server
 			local jitterX = math.random(-10, 10) / 10
 			local jitterZ = math.random(-10, 10) / 10
 			local hoverY  = math.max(mobPos.Y + CONFIG.FarmHoverHeight, MIN_FLY_Y)
-
 			SetPlatformStand(true)
-			root.CFrame = CFrame.new(
-				Vector3.new(mobPos.X + jitterX, hoverY, mobPos.Z + jitterZ)
-			)
+			root.CFrame = CFrame.new(Vector3.new(mobPos.X + jitterX, hoverY, mobPos.Z + jitterZ))
 			root.AssemblyLinearVelocity = Vector3.zero
-
-			-- update shared target untuk attack loop
-			currentFarmMob = mob
-			farmStatus     = "Nyerang " .. tostring(mob.Name)
-
-		-- ── WAIT_SPAWN ────────────────────────────────────────────────────────
+			currentFarmMob = mob; farmStatus = "Nyerang " .. tostring(mob.Name)
 		elseif farmState == FARM_STATE.WAIT_SPAWN then
-			currentFarmMob = nil
-			waitSpawnTimer = waitSpawnTimer + dt
+			currentFarmMob = nil; waitSpawnTimer = waitSpawnTimer + dt
 			if waitSpawnTimer < 1.5 then return end
 			waitSpawnTimer = 0
-			if FindNearestMob(farmData.MobName, farmData.MobFolder) then
-				farmState  = FARM_STATE.GO_MOB
-				farmStatus = "Mob ketemu!"
-			end
+			if FindNearestMob(farmData.MobName, farmData.MobFolder) then farmState = FARM_STATE.GO_MOB; farmStatus = "Mob ketemu!" end
 		end
 	end)
 end
@@ -456,16 +346,100 @@ local function StopFarm()
 	local char = LocalPlayer.Character
 	local root = char and char:FindFirstChild("HumanoidRootPart")
 	if root then root.AssemblyLinearVelocity = Vector3.zero end
-	SetPlatformStand(false)
-	StopNoclip()
-	farmState      = FARM_STATE.IDLE
-	farmStatus     = "Idle"
-	waitingFly     = false
-	waitSpawnTimer = 0
+	SetPlatformStand(false); StopNoclip()
+	farmState = FARM_STATE.IDLE; farmStatus = "Idle"
+	waitingFly = false; waitSpawnTimer = 0
 end
 
-local silentTarget = nil
+-- ── OPTIMIZER FUNCTIONS ────────────────────────────────────────────────────────
+local function CleanRAMNow()
+	collectgarbage("collect")
+	pcall(function()
+		for _, v in ipairs(Workspace:GetDescendants()) do
+			if v:IsA("Model") and v:FindFirstChild("Humanoid") then
+				if v.Humanoid.Health <= 0 then v:Destroy() end
+			end
+		end
+	end)
+	collectgarbage("collect")
+end
 
+local function DisableEffectInstance(obj)
+	if obj:IsA("ParticleEmitter") or obj:IsA("Trail") or obj:IsA("Fire")
+		or obj:IsA("Smoke") or obj:IsA("Sparkles")
+		or obj:IsA("PointLight") or obj:IsA("SpotLight") or obj:IsA("SurfaceLight") then
+		pcall(function() obj.Enabled = false end)
+	end
+end
+
+local function StartRemoveNPCEffects()
+	if OPT.removeNPCEffectsConn then return end
+	OPT.removeNPCEffectsConn = RunService.Heartbeat:Connect(function()
+		for _, v in ipairs(Workspace:GetDescendants()) do DisableEffectInstance(v) end
+	end)
+end
+local function StopRemoveNPCEffects()
+	if OPT.removeNPCEffectsConn then OPT.removeNPCEffectsConn:Disconnect() OPT.removeNPCEffectsConn = nil end
+end
+
+local function StartDisableMapShadows()
+	if OPT.mapShadowsConn then return end
+	Lighting.GlobalShadows = false
+	OPT.mapShadowsConn = RunService.Heartbeat:Connect(function()
+		Lighting.GlobalShadows = false
+		for _, v in ipairs(Workspace:GetDescendants()) do
+			if v:IsA("BasePart") and v.CastShadow then v.CastShadow = false end
+		end
+	end)
+end
+local function StopDisableMapShadows()
+	if OPT.mapShadowsConn then OPT.mapShadowsConn:Disconnect() OPT.mapShadowsConn = nil end
+	Lighting.GlobalShadows = true
+end
+
+local function StartRemoveLightingEffects()
+	if OPT.lightingEffectsConn then return end
+	OPT.lightingEffectsConn = RunService.Heartbeat:Connect(function()
+		Lighting.FogEnd = 100000
+		for _, obj in ipairs(Lighting:GetChildren()) do
+			if obj:IsA("BloomEffect") or obj:IsA("SunRaysEffect") or obj:IsA("Atmosphere")
+				or obj:IsA("ColorCorrectionEffect") or obj:IsA("DepthOfFieldEffect") or obj:IsA("BlurEffect") then
+				pcall(function() obj.Enabled = false end)
+			end
+		end
+	end)
+end
+local function StopRemoveLightingEffects()
+	if OPT.lightingEffectsConn then OPT.lightingEffectsConn:Disconnect() OPT.lightingEffectsConn = nil end
+end
+
+local function SetRenderQuality(level)
+	OPT.qualityLevel = level
+	pcall(function() (settings()).Rendering.QualityLevel = QUALITY_LEVELS[level] end)
+end
+
+local function StartAutoRamCleaner()
+	if OPT.autoRamConn then return end
+	OPT.autoRamConn = true
+	task.spawn(function()
+		while OPT.autoRamConn do CleanRAMNow() task.wait(30) end
+	end)
+end
+local function StopAutoRamCleaner() OPT.autoRamConn = nil end
+
+local function SetStretchScreen(val)
+	OPT.stretchValue = val
+	Camera.FieldOfView = math.clamp(OPT.baseFOV / val, 50, 120)
+end
+
+local function UltraOptimizeAll()
+	CleanRAMNow(); StartRemoveNPCEffects()
+	StartDisableMapShadows(); StartRemoveLightingEffects()
+	SetRenderQuality(1)
+end
+
+-- ── SILENT AIM ────────────────────────────────────────────────────────────────
+local silentTarget = nil
 local function GetSilentTarget()
 	local vp = Camera.ViewportSize
 	local cx, cy = vp.X/2, vp.Y/2
@@ -526,7 +500,6 @@ local function StartFastAttack()
 		pcall(function() RegisterAttack:FireServer(target) end)
 	end)
 end
-
 local function StopFastAttack()
 	if fastAttackConn then fastAttackConn:Disconnect() fastAttackConn = nil end
 end
@@ -534,23 +507,16 @@ end
 local function PctToSize(pct)
 	return MIN_HITBOX + (MAX_HITBOX - MIN_HITBOX) * ((pct - 1) / 99)
 end
-
 local function ExpandHitbox()
 	if not OriginalLocalSize then OriginalLocalSize = LocalRoot.Size end
 	local sz = PctToSize(CONFIG.HitboxPercent)
 	LocalRoot.Size = Vector3.new(sz, sz, sz)
 end
-
 local function RestoreHitbox()
-	if OriginalLocalSize then
-		LocalRoot.Size = OriginalLocalSize
-		OriginalLocalSize = nil
-	end
+	if OriginalLocalSize then LocalRoot.Size = OriginalLocalSize; OriginalLocalSize = nil end
 end
 
-local function GetTargetSpeed()
-	return BASE_SPEED + (MAX_SPEED - BASE_SPEED) * (CONFIG.SpeedPercent / 100)
-end
+local function GetTargetSpeed() return BASE_SPEED + (MAX_SPEED - BASE_SPEED) * (CONFIG.SpeedPercent / 100) end
 
 local function Mode2Func(pos)
 	local p = Instance.new("Part")
@@ -561,13 +527,9 @@ local function Mode2Func(pos)
 end
 
 local function SimulateDash()
-	pcall(function()
-		game:GetService("VirtualInputManager"):SendKeyEvent(true, Enum.KeyCode.Q, false, game)
-	end)
+	pcall(function() game:GetService("VirtualInputManager"):SendKeyEvent(true, Enum.KeyCode.Q, false, game) end)
 	task.delay(0.03, function()
-		pcall(function()
-			game:GetService("VirtualInputManager"):SendKeyEvent(false, Enum.KeyCode.Q, false, game)
-		end)
+		pcall(function() game:GetService("VirtualInputManager"):SendKeyEvent(false, Enum.KeyCode.Q, false, game) end)
 	end)
 end
 
@@ -579,7 +541,6 @@ local function StartDashLoop()
 		if now - lastDashTime >= DASH_INTERVAL then lastDashTime=now SimulateDash() end
 	end)
 end
-
 local function StopDashLoop()
 	if dashConn then dashConn:Disconnect() dashConn = nil end
 	dashHolding = false
@@ -593,6 +554,7 @@ UserInputService.InputEnded:Connect(function(input)
 	if input.KeyCode == Enum.KeyCode.Q then dashHolding = false end
 end)
 
+-- ── ESP ───────────────────────────────────────────────────────────────────────
 local function CreateESP(player)
 	local esp = {Box=Drawing.new("Square"),Line=Drawing.new("Line"),NameTag=Drawing.new("Text"),HealthBar=Drawing.new("Square")}
 	esp.Box.Thickness=1; esp.Box.Color=Color3.fromRGB(255,50,50); esp.Box.Filled=false; esp.Box.Visible=false
@@ -602,16 +564,13 @@ local function CreateESP(player)
 	esp.HealthBar.Thickness=1; esp.HealthBar.Filled=true; esp.HealthBar.Visible=false
 	return esp
 end
-
 local function CleanupESP(p)
 	local esp = ESP_Objects[p]
 	if esp then esp.Box:Remove() esp.Line:Remove() esp.NameTag:Remove() esp.HealthBar:Remove() ESP_Objects[p]=nil end
 end
-
 local function HideESP(esp)
 	esp.Box.Visible=false esp.NameTag.Visible=false esp.Line.Visible=false esp.HealthBar.Visible=false
 end
-
 local function HideAllESP()
 	for _,esp in pairs(ESP_Objects) do HideESP(esp) end
 end
@@ -663,6 +622,10 @@ local function RenderESP()
 	end
 end
 
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- GUI
+-- ═══════════════════════════════════════════════════════════════════════════════
+
 local screenGui = Instance.new("ScreenGui")
 screenGui.Name="Ontoy_Hub"; screenGui.ResetOnSpawn=false
 screenGui.Parent=LocalPlayer:WaitForChild("PlayerGui")
@@ -675,6 +638,7 @@ local REDZ = {
 	ToggleOff=Color3.fromRGB(40,32,36), SliderFill=Color3.fromRGB(200,30,50),
 	SliderBG=Color3.fromRGB(35,28,32), Green=Color3.fromRGB(30,180,80),
 	GreenDim=Color3.fromRGB(20,100,50),
+	Yellow=Color3.fromRGB(220,180,40), YellowDim=Color3.fromRGB(120,100,20),
 }
 
 local mainWindow=Instance.new("Frame")
@@ -735,7 +699,7 @@ local function MakeWindowBtn(parent,xOff,bg,txt)
 	return btn
 end
 
-local closeBtn   =MakeWindowBtn(titleBar,-34,REDZ.Accent,   "✕")
+local closeBtn   =MakeWindowBtn(titleBar,-34,REDZ.Accent,"✕")
 local minimizeBtn=MakeWindowBtn(titleBar,-66,REDZ.ToggleOff,"—")
 
 local sidebar=Instance.new("Frame",mainWindow)
@@ -930,6 +894,34 @@ local function MakeSliderRow(parent,label,displayMin,displayMax,initPct,unit,onC
 	return row
 end
 
+-- ── ACTION BUTTON (untuk optimizer) ──────────────────────────────────────────
+local function MakeActionBtn(parent, label, sublabel, accentCol)
+	accentCol = accentCol or REDZ.Yellow
+	local row = Instance.new("Frame", parent)
+	row.Size = UDim2.new(1,-8,0,52); row.BackgroundColor3=REDZ.BG2; row.BorderSizePixel=0
+	Instance.new("UICorner",row).CornerRadius=UDim.new(0,8)
+	local stroke=Instance.new("UIStroke",row); stroke.Color=REDZ.Stroke; stroke.Thickness=1
+	local title=Instance.new("TextLabel",row)
+	title.Size=UDim2.new(1,-60,0,22); title.Position=UDim2.new(0,14,0,8)
+	title.BackgroundTransparency=1; title.Text=label
+	title.TextColor3=REDZ.TextMain; title.Font=Enum.Font.GothamBold; title.TextSize=12
+	title.TextXAlignment=Enum.TextXAlignment.Left
+	if sublabel then
+		local sub=Instance.new("TextLabel",row)
+		sub.Size=UDim2.new(1,-60,0,16); sub.Position=UDim2.new(0,14,0,28)
+		sub.BackgroundTransparency=1; sub.Text=sublabel
+		sub.TextColor3=REDZ.TextSub; sub.Font=Enum.Font.Gotham; sub.TextSize=10
+		sub.TextXAlignment=Enum.TextXAlignment.Left
+	end
+	local btn=Instance.new("TextButton",row)
+	btn.Size=UDim2.new(0,50,0,24); btn.Position=UDim2.new(1,-58,0.5,-12)
+	btn.BackgroundColor3=accentCol; btn.Text="RUN"; btn.TextColor3=Color3.fromRGB(255,255,255)
+	btn.Font=Enum.Font.GothamBold; btn.TextSize=10; btn.BorderSizePixel=0
+	Instance.new("UICorner",btn).CornerRadius=UDim.new(0,6)
+	return row, btn
+end
+
+-- ── PAGES ────────────────────────────────────────────────────────────────────
 local combatPage=MakePage(); pages["combat"]=combatPage
 local combatBtn =MakeSidebarBtn("⚔","Combat","combat")
 MakeSectionLabel(combatPage,"HITBOX")
@@ -969,35 +961,29 @@ local statusCard=Instance.new("Frame",farmPage)
 statusCard.Size=UDim2.new(1,-8,0,52); statusCard.BackgroundColor3=REDZ.BG2; statusCard.BorderSizePixel=0
 Instance.new("UICorner",statusCard).CornerRadius=UDim.new(0,8)
 local statusStroke=Instance.new("UIStroke",statusCard); statusStroke.Color=REDZ.Stroke; statusStroke.Thickness=1
-
 local statusIcon=Instance.new("TextLabel",statusCard)
 statusIcon.Size=UDim2.new(0,20,1,0); statusIcon.Position=UDim2.new(0,12,0,0)
 statusIcon.BackgroundTransparency=1; statusIcon.Text="○"
 statusIcon.TextColor3=REDZ.TextSub; statusIcon.Font=Enum.Font.GothamBold; statusIcon.TextSize=14
-
 local statusTitle=Instance.new("TextLabel",statusCard)
 statusTitle.Size=UDim2.new(1,-60,0,20); statusTitle.Position=UDim2.new(0,36,0,6)
 statusTitle.BackgroundTransparency=1; statusTitle.Text="AUTO FARM"
 statusTitle.TextColor3=REDZ.TextSub; statusTitle.Font=Enum.Font.GothamBold; statusTitle.TextSize=10
 statusTitle.TextXAlignment=Enum.TextXAlignment.Left
-
 local statusText=Instance.new("TextLabel",statusCard)
 statusText.Size=UDim2.new(1,-60,0,18); statusText.Position=UDim2.new(0,36,0,26)
 statusText.BackgroundTransparency=1; statusText.Text="Idle"
 statusText.TextColor3=REDZ.TextMain; statusText.Font=Enum.Font.Gotham; statusText.TextSize=11
 statusText.TextXAlignment=Enum.TextXAlignment.Left
-
 local levelCard=Instance.new("Frame",farmPage)
 levelCard.Size=UDim2.new(1,-8,0,52); levelCard.BackgroundColor3=REDZ.BG2; levelCard.BorderSizePixel=0
 Instance.new("UICorner",levelCard).CornerRadius=UDim.new(0,8)
 Instance.new("UIStroke",levelCard).Color=REDZ.Stroke
-
 local levelText=Instance.new("TextLabel",levelCard)
 levelText.Size=UDim2.new(1,-16,1,0); levelText.Position=UDim2.new(0,12,0,0)
 levelText.BackgroundTransparency=1; levelText.Text="Level: — | Island: — | Target: —"
 levelText.TextColor3=REDZ.TextSub; levelText.Font=Enum.Font.Gotham; levelText.TextSize=11
 levelText.TextXAlignment=Enum.TextXAlignment.Left; levelText.TextWrapped=true
-
 MakeSectionLabel(farmPage,"MAIN")
 local _,farmGet,farmSet=MakeToggleRow(farmPage,"Auto Farm","Detect level → fly ke NPC → quest → hover attack",REDZ.Green)
 MakeSectionLabel(farmPage,"SETTINGS")
@@ -1025,6 +1011,107 @@ RunService.Heartbeat:Connect(function()
 	end
 end)
 
+-- ── OPTIMIZER PAGE ────────────────────────────────────────────────────────────
+local optPage = MakePage(); pages["optimizer"] = optPage
+local optBtn  = MakeSidebarBtn("⚡","Optimizer","optimizer")
+
+MakeSectionLabel(optPage, "ONE-CLICK")
+local _,ultraBtn = MakeActionBtn(optPage,"Ultra Optimize","Remove effects + clean RAM + lower quality",REDZ.Yellow)
+ultraBtn.MouseButton1Click:Connect(UltraOptimizeAll)
+
+local _,cleanBtn = MakeActionBtn(optPage,"Clean RAM Now","Hapus dead enemies + garbage collect",REDZ.Yellow)
+cleanBtn.MouseButton1Click:Connect(CleanRAMNow)
+
+MakeSectionLabel(optPage, "TOGGLES")
+local _,npcEffGet,_    = MakeToggleRow(optPage,"Remove NPC Effects","Disable partikel, trail, fire, smoke, cahaya NPC",REDZ.Yellow)
+local _,mapShadGet,_   = MakeToggleRow(optPage,"Disable Map Shadows","CastShadow = false di seluruh map",REDZ.Yellow)
+local _,lightEffGet,_  = MakeToggleRow(optPage,"Remove Lighting Effects","Matiin Bloom, Atmosphere, SunRays, Fog",REDZ.Yellow)
+local _,autoRamGet2,_  = MakeToggleRow(optPage,"Auto RAM Cleaner","Bersih RAM otomatis tiap 30 detik",REDZ.Yellow)
+
+MakeSectionLabel(optPage, "RENDER")
+-- Quality cycle button
+local qualRow = Instance.new("Frame", optPage)
+qualRow.Size = UDim2.new(1,-8,0,52); qualRow.BackgroundColor3=REDZ.BG2; qualRow.BorderSizePixel=0
+Instance.new("UICorner",qualRow).CornerRadius=UDim.new(0,8)
+Instance.new("UIStroke",qualRow).Color=REDZ.Stroke
+local qualTitle = Instance.new("TextLabel",qualRow)
+qualTitle.Size=UDim2.new(1,-70,0,22); qualTitle.Position=UDim2.new(0,14,0,8)
+qualTitle.BackgroundTransparency=1; qualTitle.Text="Render Quality: Lv "..OPT.qualityLevel
+qualTitle.TextColor3=REDZ.TextMain; qualTitle.Font=Enum.Font.GothamBold; qualTitle.TextSize=12
+qualTitle.TextXAlignment=Enum.TextXAlignment.Left
+local qualSub = Instance.new("TextLabel",qualRow)
+qualSub.Size=UDim2.new(1,-70,0,16); qualSub.Position=UDim2.new(0,14,0,28)
+qualSub.BackgroundTransparency=1; qualSub.Text="Tap untuk cycle: 1 (lowest) → 5 → 10"
+qualSub.TextColor3=REDZ.TextSub; qualSub.Font=Enum.Font.Gotham; qualSub.TextSize=10
+qualSub.TextXAlignment=Enum.TextXAlignment.Left
+local qualBtn2=Instance.new("TextButton",qualRow)
+qualBtn2.Size=UDim2.new(0,50,0,24); qualBtn2.Position=UDim2.new(1,-58,0.5,-12)
+qualBtn2.BackgroundColor3=REDZ.Yellow; qualBtn2.Text="CYCLE"; qualBtn2.TextColor3=Color3.fromRGB(0,0,0)
+qualBtn2.Font=Enum.Font.GothamBold; qualBtn2.TextSize=9; qualBtn2.BorderSizePixel=0
+Instance.new("UICorner",qualBtn2).CornerRadius=UDim.new(0,6)
+qualBtn2.MouseButton1Click:Connect(function()
+	OPT.qualityLevel = OPT.qualityLevel % 3 + 1
+	SetRenderQuality(OPT.qualityLevel)
+	qualTitle.Text = "Render Quality: Lv " .. OPT.qualityLevel
+end)
+
+MakeSectionLabel(optPage, "STRETCH SCREEN")
+MakeSliderRow(optPage,"FOV Stretch",0.3,1.0,0.5,"x",function(val)
+	SetStretchScreen(0.3 + val/100 * 0.7)
+end)
+-- rebuild slider properly untuk stretch 0.3–1.0
+local stretchRow=Instance.new("Frame",optPage)
+stretchRow.Size=UDim2.new(1,-8,0,66); stretchRow.BackgroundColor3=REDZ.BG2; stretchRow.BorderSizePixel=0
+Instance.new("UICorner",stretchRow).CornerRadius=UDim.new(0,8)
+Instance.new("UIStroke",stretchRow).Color=REDZ.Stroke
+local strTitle=Instance.new("TextLabel",stretchRow)
+strTitle.Size=UDim2.new(1,-80,0,20); strTitle.Position=UDim2.new(0,14,0,8)
+strTitle.BackgroundTransparency=1; strTitle.Text="Stretch Screen"
+strTitle.TextColor3=REDZ.TextMain; strTitle.Font=Enum.Font.GothamBold; strTitle.TextSize=12
+strTitle.TextXAlignment=Enum.TextXAlignment.Left
+local strValLbl=Instance.new("TextLabel",stretchRow)
+strValLbl.Size=UDim2.new(0,70,0,20); strValLbl.Position=UDim2.new(1,-78,0,8)
+strValLbl.BackgroundTransparency=1; strValLbl.Font=Enum.Font.GothamBold; strValLbl.TextSize=12
+strValLbl.TextColor3=REDZ.Yellow; strValLbl.TextXAlignment=Enum.TextXAlignment.Right
+strValLbl.Text="0.65"
+local strBG=Instance.new("Frame",stretchRow)
+strBG.Size=UDim2.new(1,-28,0,5); strBG.Position=UDim2.new(0,14,0,42)
+strBG.BackgroundColor3=REDZ.SliderBG; strBG.BorderSizePixel=0
+Instance.new("UICorner",strBG).CornerRadius=UDim.new(0,3)
+local strFill=Instance.new("Frame",strBG)
+strFill.Size=UDim2.new(0.5,0,1,0); strFill.BackgroundColor3=REDZ.Yellow; strFill.BorderSizePixel=0
+Instance.new("UICorner",strFill).CornerRadius=UDim.new(0,3)
+local strKnob=Instance.new("Frame",strBG)
+strKnob.Size=UDim2.new(0,14,0,14); strKnob.Position=UDim2.new(0.5,-7,0.5,-7)
+strKnob.BackgroundColor3=Color3.fromRGB(255,255,255); strKnob.BorderSizePixel=0
+Instance.new("UICorner",strKnob).CornerRadius=UDim.new(0,7)
+local strHit=Instance.new("TextButton",strBG)
+strHit.Size=UDim2.new(1,0,0,28); strHit.Position=UDim2.new(0,0,0.5,-14)
+strHit.BackgroundTransparency=1; strHit.Text=""; strHit.ZIndex=5
+local strDrag=false
+local function ComputeStretch(px)
+	local bg=strBG.AbsolutePosition.X; local bw=strBG.AbsoluteSize.X
+	local pct=math.clamp((px-bg)/bw,0,1)
+	local val=0.3+pct*0.7
+	return pct, math.floor(val*100)/100
+end
+local function ApplyStretch(pct,val)
+	strFill.Size=UDim2.new(pct,0,1,0); strKnob.Position=UDim2.new(pct,-7,0.5,-7)
+	strValLbl.Text=string.format("%.2f",val)
+	SetStretchScreen(val)
+end
+strHit.MouseButton1Down:Connect(function() strDrag=true end)
+UserInputService.InputChanged:Connect(function(i)
+	if strDrag and (i.UserInputType==Enum.UserInputType.MouseMovement or i.UserInputType==Enum.UserInputType.Touch) then
+		ApplyStretch(ComputeStretch(i.Position.X))
+	end
+end)
+UserInputService.InputEnded:Connect(function(i)
+	if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then strDrag=false end
+end)
+strHit.MouseButton1Click:Connect(function() ApplyStretch(ComputeStretch(UserInputService:GetMouseLocation().X)) end)
+
+-- ── WIRE TOGGLES ──────────────────────────────────────────────────────────────
 local function WireToggle(getter,configKey,onEnable,onDisable)
 	RunService.Heartbeat:Connect(function()
 		local s=getter()
@@ -1058,10 +1145,31 @@ WireToggle(noclipGet, "Mode10",
 	function() if not CONFIG.Mode9 then StopNoclip()  end end
 )
 
-combatBtn.MouseButton1Click:Connect(function() SetActivePage("combat")   end)
-visualBtn.MouseButton1Click:Connect(function() SetActivePage("visual")   end)
-moveBtn.MouseButton1Click:Connect(function()   SetActivePage("movement") end)
-farmBtn.MouseButton1Click:Connect(function()   SetActivePage("farm")     end)
+-- Optimizer toggles wire langsung ke OPT functions (bukan CONFIG)
+RunService.Heartbeat:Connect(function()
+	local ne = npcEffGet()
+	if ne and not OPT.removeNPCEffectsConn then StartRemoveNPCEffects() end
+	if not ne and OPT.removeNPCEffectsConn then StopRemoveNPCEffects() end
+
+	local ms = mapShadGet()
+	if ms and not OPT.mapShadowsConn then StartDisableMapShadows() end
+	if not ms and OPT.mapShadowsConn then StopDisableMapShadows() end
+
+	local le = lightEffGet()
+	if le and not OPT.lightingEffectsConn then StartRemoveLightingEffects() end
+	if not le and OPT.lightingEffectsConn then StopRemoveLightingEffects() end
+
+	local ar = autoRamGet2()
+	if ar and not OPT.autoRamConn then StartAutoRamCleaner() end
+	if not ar and OPT.autoRamConn then StopAutoRamCleaner() end
+end)
+
+-- ── SIDEBAR WIRING ────────────────────────────────────────────────────────────
+combatBtn.MouseButton1Click:Connect(function() SetActivePage("combat")    end)
+visualBtn.MouseButton1Click:Connect(function() SetActivePage("visual")    end)
+moveBtn.MouseButton1Click:Connect(function()   SetActivePage("movement")  end)
+farmBtn.MouseButton1Click:Connect(function()   SetActivePage("farm")      end)
+optBtn.MouseButton1Click:Connect(function()    SetActivePage("optimizer") end)
 SetActivePage("combat")
 
 local contentVisible=true
@@ -1074,6 +1182,7 @@ end)
 closeBtn.MouseButton1Click:Connect(function()
 	RestoreHitbox(); LocalHumanoid.WalkSpeed=BASE_SPEED
 	HideAllESP(); StopDashLoop(); StopFastAttack(); StopFarm()
+	StopRemoveNPCEffects(); StopDisableMapShadows(); StopRemoveLightingEffects(); StopAutoRamCleaner()
 	if fovCircle then pcall(function() fovCircle:Remove() end) end
 	screenGui:Destroy()
 end)
@@ -1084,12 +1193,10 @@ LocalPlayer.CharacterAdded:Connect(function(char)
 	LocalHumanoid=char:WaitForChild("Humanoid")
 	OriginalLocalSize=nil; dashHolding=false; silentTarget=nil
 	currentFarmMob=nil
+	OPT.baseFOV = Camera.FieldOfView
 	if CONFIG.Mode9 then
 		farmState     =FARM_STATE.GO_QUEST
-		waitingFly    =false
-		waitSpawnTimer=0
-		lastQuestCall =0
-		questStuckTimer=0
+		waitingFly    =false; waitSpawnTimer=0; lastQuestCall=0; questStuckTimer=0
 		farmStatus    ="Respawned — restarting"
 	end
 	if CONFIG.Mode5 then LocalHumanoid.WalkSpeed=GetTargetSpeed() end
