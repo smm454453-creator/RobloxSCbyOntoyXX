@@ -6,6 +6,7 @@ local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
 local VirtualUser = game:GetService("VirtualUser")
 local Camera = Workspace.CurrentCamera
+local Lighting = game:GetService("Lighting")
 
 local LocalPlayer = Players.LocalPlayer
 local LocalCharacter = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
@@ -663,6 +664,290 @@ local function RenderESP()
 	end
 end
 
+-- ============================================================
+-- SEA NAVIGATION — logic (from bfSeaF)
+-- ============================================================
+
+local function SeaNav_GetRoot()
+	local c = LocalPlayer.Character
+	return c and c:FindFirstChild("HumanoidRootPart")
+end
+
+local function SeaNav_GetHumanoid()
+	local c = LocalPlayer.Character
+	return c and c:FindFirstChildOfClass("Humanoid")
+end
+
+local function SeaNav_GetSeatAndBoat()
+	local hum = SeaNav_GetHumanoid()
+	if not hum then return nil, nil end
+	local seat = hum.SeatPart
+	if not seat then return nil, nil end
+	local boat = seat.Parent
+	if not boat or not boat:IsA("Model") then return nil, nil end
+	return seat, boat
+end
+
+local SNav = {
+	waterWalkConn = nil, waterPlatform = nil, waterWalkHeight = 20,
+	clearVisionConn = nil,
+	hoverBoatConn = nil, hoverHeight = 45,
+	boatSpeedConn = nil, boatSpeedValue = 100,
+	collisionConn = nil,
+	walkSpeedConn = nil, walkSpeedValue = 16,
+	jumpPowerConn = nil, jumpPowerValue = 50,
+}
+
+local function SeaNav_StartWaterWalk()
+	if SNav.waterWalkConn then return end
+	local plat = Instance.new("Part")
+	plat.Name = "SeaNav_WaterPlatform"
+	plat.Size = Vector3.new(50, 1, 50)
+	plat.Anchored = true
+	plat.CanCollide = true
+	plat.Transparency = 1
+	plat.Parent = Workspace
+	SNav.waterPlatform = plat
+
+	SNav.waterWalkConn = RunService.RenderStepped:Connect(function()
+		local root = SeaNav_GetRoot()
+		if not root then return end
+		plat.CFrame = CFrame.new(root.Position.X, SNav.waterWalkHeight, root.Position.Z)
+	end)
+end
+
+local function SeaNav_StopWaterWalk()
+	if SNav.waterWalkConn then SNav.waterWalkConn:Disconnect(); SNav.waterWalkConn = nil end
+	if SNav.waterPlatform then SNav.waterPlatform:Destroy(); SNav.waterPlatform = nil end
+end
+
+local function SeaNav_StartClearVision()
+	if SNav.clearVisionConn then return end
+	SNav.clearVisionConn = RunService.RenderStepped:Connect(function()
+		Lighting.Brightness = 2
+		Lighting.ClockTime = 12
+		Lighting.FogEnd = 100000
+		Lighting.GlobalShadows = false
+		Lighting.Ambient = Color3.fromRGB(255, 255, 255)
+		Lighting.OutdoorAmbient = Color3.fromRGB(255, 255, 255)
+		for _, obj in ipairs(Lighting:GetChildren()) do
+			if obj:IsA("Atmosphere") or obj:IsA("ColorCorrectionEffect")
+				or obj:IsA("BloomEffect") or obj:IsA("SunRaysEffect") or obj:IsA("BlurEffect") then
+				pcall(function() obj.Enabled = false end)
+			end
+		end
+	end)
+end
+
+local function SeaNav_StopClearVision()
+	if SNav.clearVisionConn then SNav.clearVisionConn:Disconnect(); SNav.clearVisionConn = nil end
+end
+
+local function SeaNav_StartHoverBoat()
+	if SNav.hoverBoatConn then return end
+	SNav.hoverBoatConn = RunService.Heartbeat:Connect(function()
+		local seat, boat = SeaNav_GetSeatAndBoat()
+		if not seat or not boat then return end
+		local primary = boat.PrimaryPart or seat
+		if not primary then return end
+		local pos = primary.Position
+		if math.abs(pos.Y - SNav.hoverHeight) > 2 then
+			local cf = primary.CFrame
+			primary.CFrame = CFrame.new(pos.X, SNav.hoverHeight, pos.Z) * (cf - cf.Position)
+		end
+	end)
+end
+
+local function SeaNav_StopHoverBoat()
+	if SNav.hoverBoatConn then SNav.hoverBoatConn:Disconnect(); SNav.hoverBoatConn = nil end
+end
+
+local function SeaNav_StartBoatSpeed()
+	if SNav.boatSpeedConn then return end
+	SNav.boatSpeedConn = RunService.Heartbeat:Connect(function(deltaTime)
+		local seat, boat = SeaNav_GetSeatAndBoat()
+		if not seat or not boat then return end
+		if seat.Throttle == 1 then
+			local primary = boat.PrimaryPart or seat
+			if primary then
+				primary.CFrame = primary.CFrame + (primary.CFrame.LookVector * (SNav.boatSpeedValue * deltaTime))
+			end
+		end
+	end)
+end
+
+local function SeaNav_StopBoatSpeed()
+	if SNav.boatSpeedConn then SNav.boatSpeedConn:Disconnect(); SNav.boatSpeedConn = nil end
+end
+
+local function SeaNav_StartSmoothCollision()
+	if SNav.collisionConn then return end
+	SNav.collisionConn = RunService.Stepped:Connect(function()
+		local seat, boat = SeaNav_GetSeatAndBoat()
+		if not seat or not boat then return end
+		for _, part in ipairs(boat:GetDescendants()) do
+			if part:IsA("BasePart") then part.CanCollide = false end
+		end
+	end)
+end
+
+local function SeaNav_StopSmoothCollision()
+	if SNav.collisionConn then SNav.collisionConn:Disconnect(); SNav.collisionConn = nil end
+end
+
+local function SeaNav_StartWalkSpeed()
+	if SNav.walkSpeedConn then return end
+	SNav.walkSpeedConn = RunService.Heartbeat:Connect(function(dt)
+		local hum = SeaNav_GetHumanoid()
+		local root = SeaNav_GetRoot()
+		if hum and root and hum.MoveDirection.Magnitude > 0 then
+			local extraSpeed = SNav.walkSpeedValue - 16
+			if extraSpeed > 0 then
+				root.CFrame = root.CFrame + (hum.MoveDirection * (extraSpeed * dt))
+			end
+		end
+	end)
+end
+
+local function SeaNav_StopWalkSpeed()
+	if SNav.walkSpeedConn then SNav.walkSpeedConn:Disconnect(); SNav.walkSpeedConn = nil end
+end
+
+local function SeaNav_StartJumpPower()
+	if SNav.jumpPowerConn then return end
+	SNav.jumpPowerConn = RunService.RenderStepped:Connect(function()
+		local hum = SeaNav_GetHumanoid()
+		if hum then
+			hum.UseJumpPower = true
+			hum.JumpPower = SNav.jumpPowerValue
+		end
+	end)
+end
+
+local function SeaNav_StopJumpPower()
+	if SNav.jumpPowerConn then SNav.jumpPowerConn:Disconnect(); SNav.jumpPowerConn = nil end
+end
+
+-- ============================================================
+-- FPS OVERFLOW — Ultra Optimizer logic
+-- ============================================================
+
+local FPSOpt = {
+	npcEffectsConn  = nil,
+	mapShadowsConn  = nil,
+	lightingConn    = nil,
+	autoRamConn     = nil,
+	qualityLevel    = 1,
+	stretchValue    = 1.0,
+	baseFOV         = Camera.FieldOfView,
+}
+
+local FPS_QUALITY_LEVELS = {
+	Enum.QualityLevel.Level01,
+	Enum.QualityLevel.Level05,
+	Enum.QualityLevel.Level10,
+}
+
+local function FPSOpt_CleanRAMNow()
+	collectgarbage("collect")
+	pcall(function()
+		for _, v in ipairs(Workspace:GetDescendants()) do
+			if v:IsA("Model") and v:FindFirstChild("Humanoid") then
+				if v.Humanoid.Health <= 0 then v:Destroy() end
+			end
+		end
+	end)
+	collectgarbage("collect")
+end
+
+local function FPSOpt_DisableEffectInstance(obj)
+	if obj:IsA("ParticleEmitter") or obj:IsA("Trail")
+		or obj:IsA("Fire") or obj:IsA("Smoke") or obj:IsA("Sparkles") then
+		pcall(function() obj.Enabled = false end)
+	elseif obj:IsA("PointLight") or obj:IsA("SpotLight") or obj:IsA("SurfaceLight") then
+		pcall(function() obj.Enabled = false end)
+	end
+end
+
+local function FPSOpt_StartRemoveNPCEffects()
+	if FPSOpt.npcEffectsConn then return end
+	FPSOpt.npcEffectsConn = RunService.Heartbeat:Connect(function()
+		for _, v in ipairs(Workspace:GetDescendants()) do
+			FPSOpt_DisableEffectInstance(v)
+		end
+	end)
+end
+
+local function FPSOpt_StopRemoveNPCEffects()
+	if FPSOpt.npcEffectsConn then FPSOpt.npcEffectsConn:Disconnect(); FPSOpt.npcEffectsConn = nil end
+end
+
+local function FPSOpt_StartDisableMapShadows()
+	if FPSOpt.mapShadowsConn then return end
+	Lighting.GlobalShadows = false
+	FPSOpt.mapShadowsConn = RunService.Heartbeat:Connect(function()
+		Lighting.GlobalShadows = false
+		for _, v in ipairs(Workspace:GetDescendants()) do
+			if v:IsA("BasePart") and v.CastShadow then v.CastShadow = false end
+		end
+	end)
+end
+
+local function FPSOpt_StopDisableMapShadows()
+	if FPSOpt.mapShadowsConn then FPSOpt.mapShadowsConn:Disconnect(); FPSOpt.mapShadowsConn = nil end
+	Lighting.GlobalShadows = true
+end
+
+local function FPSOpt_StartRemoveLightingEffects()
+	if FPSOpt.lightingConn then return end
+	FPSOpt.lightingConn = RunService.Heartbeat:Connect(function()
+		Lighting.FogEnd = 100000
+		for _, obj in ipairs(Lighting:GetChildren()) do
+			if obj:IsA("BloomEffect") or obj:IsA("SunRaysEffect")
+				or obj:IsA("Atmosphere") or obj:IsA("ColorCorrectionEffect")
+				or obj:IsA("DepthOfFieldEffect") or obj:IsA("BlurEffect") then
+				pcall(function() obj.Enabled = false end)
+			end
+		end
+	end)
+end
+
+local function FPSOpt_StopRemoveLightingEffects()
+	if FPSOpt.lightingConn then FPSOpt.lightingConn:Disconnect(); FPSOpt.lightingConn = nil end
+end
+
+local function FPSOpt_SetRenderQuality(level)
+	FPSOpt.qualityLevel = level
+	pcall(function() (settings()).Rendering.QualityLevel = FPS_QUALITY_LEVELS[level] end)
+end
+
+local function FPSOpt_StartAutoRamCleaner()
+	if FPSOpt.autoRamConn then return end
+	FPSOpt.autoRamConn = true
+	task.spawn(function()
+		while FPSOpt.autoRamConn do
+			FPSOpt_CleanRAMNow()
+			task.wait(30)
+		end
+	end)
+end
+
+local function FPSOpt_StopAutoRamCleaner()
+	FPSOpt.autoRamConn = nil
+end
+
+local function FPSOpt_SetStretchScreen(val)
+	FPSOpt.stretchValue = val
+	Camera.FieldOfView = math.clamp(FPSOpt.baseFOV / val, 50, 120)
+end
+
+local function FPSOpt_UltraOptimizeAll()
+	FPSOpt_CleanRAMNow()
+	FPSOpt_StartRemoveNPCEffects()
+	FPSOpt_StartDisableMapShadows()
+	FPSOpt_StartRemoveLightingEffects()
+	FPSOpt_SetRenderQuality(1)
+end
 local screenGui = Instance.new("ScreenGui")
 screenGui.Name="Ontoy_Hub"; screenGui.ResetOnSpawn=false
 screenGui.Parent=LocalPlayer:WaitForChild("PlayerGui")
@@ -1005,6 +1290,131 @@ local _,noclipGet,_=MakeToggleRow(farmPage,"Noclip","CanCollide = false saat far
 MakeSliderRow(farmPage,"Fly Speed",50,700,(CONFIG.FarmFlySpeed-50)/650," stud/s",function(val) CONFIG.FarmFlySpeed=val end)
 MakeSliderRow(farmPage,"Hover Height",2,20,(CONFIG.FarmHoverHeight-2)/18," stud",function(val) CONFIG.FarmHoverHeight=val end)
 
+local function MakeActionRow(parent,label,sublabel,onClick)
+	local row=Instance.new("TextButton",parent)
+	row.Size=UDim2.new(1,-8,0,52); row.BackgroundColor3=REDZ.BG2; row.BorderSizePixel=0
+	row.AutoButtonColor=false; row.Text=""
+	Instance.new("UICorner",row).CornerRadius=UDim.new(0,8)
+	local stroke=Instance.new("UIStroke",row); stroke.Color=REDZ.Stroke; stroke.Thickness=1
+	local title=Instance.new("TextLabel",row)
+	title.Size=UDim2.new(1,-40,0,22); title.Position=UDim2.new(0,14,0,8)
+	title.BackgroundTransparency=1; title.Text=label
+	title.TextColor3=REDZ.TextMain; title.Font=Enum.Font.GothamBold; title.TextSize=12
+	title.TextXAlignment=Enum.TextXAlignment.Left
+	if sublabel then
+		local sub=Instance.new("TextLabel",row)
+		sub.Size=UDim2.new(1,-40,0,16); sub.Position=UDim2.new(0,14,0,28)
+		sub.BackgroundTransparency=1; sub.Text=sublabel
+		sub.TextColor3=REDZ.TextSub; sub.Font=Enum.Font.Gotham; sub.TextSize=10
+		sub.TextXAlignment=Enum.TextXAlignment.Left
+	end
+	local chevron=Instance.new("TextLabel",row)
+	chevron.Size=UDim2.new(0,20,1,0); chevron.Position=UDim2.new(1,-28,0,0)
+	chevron.BackgroundTransparency=1; chevron.Text="›"
+	chevron.TextColor3=REDZ.AccentGlow; chevron.Font=Enum.Font.GothamBold; chevron.TextSize=18
+	row.MouseEnter:Connect(function() row.BackgroundColor3=Color3.fromRGB(26,20,24) end)
+	row.MouseLeave:Connect(function() row.BackgroundColor3=REDZ.BG2 end)
+	row.MouseButton1Click:Connect(onClick)
+	return row, title
+end
+
+local seaPage=MakePage(); pages["sea"]=seaPage
+local seaBtn =MakeSidebarBtn("🌊","Sea Nav","sea")
+
+MakeSectionLabel(seaPage,"WATER SURFACE PLATFORM")
+local _,waterWalkGet,_ = MakeToggleRow(seaPage,"Water Walk","Part transparan agar bisa jalan di atas air")
+MakeSliderRow(seaPage,"Platform Y Offset",0,100,0.2," Y",function(val) SNav.waterWalkHeight=val end)
+
+MakeSectionLabel(seaPage,"CHARACTER MOVEMENT")
+local _,seaWalkSpeedGet,_ = MakeToggleRow(seaPage,"Fast Run","Custom WalkSpeed untuk lari kencang")
+MakeSliderRow(seaPage,"WalkSpeed",16,300,0,"",function(val) SNav.walkSpeedValue=val end)
+local _,seaJumpPowerGet,_ = MakeToggleRow(seaPage,"High Jump","Custom JumpPower untuk lompat tinggi")
+MakeSliderRow(seaPage,"JumpPower",50,500,0,"",function(val) SNav.jumpPowerValue=val end)
+
+MakeSectionLabel(seaPage,"LIGHTING")
+local _,seaClearVisionGet,_ = MakeToggleRow(seaPage,"Clear Vision","Hapus kabut dan jadikan terang benderang")
+
+MakeSectionLabel(seaPage,"VEHICLE PHYSICS")
+local _,hoverBoatGet,_ = MakeToggleRow(seaPage,"Hover Boat","Paksa kapal melayang di atas permukaan air")
+MakeSliderRow(seaPage,"Hover Height",0,100,0.45," Y",function(val) SNav.hoverHeight=val end)
+local _,boatSpeedGet,_ = MakeToggleRow(seaPage,"Boat Speed","Dorong kapal maju saat W ditekan")
+MakeSliderRow(seaPage,"Speed Value",10,500,0.18," stud/s",function(val) SNav.boatSpeedValue=val end)
+
+MakeSectionLabel(seaPage,"COLLISION MODIFIER")
+local _,seaCollisionGet,_ = MakeToggleRow(seaPage,"Smooth Boat Collision","Noclip kapal tembus batu")
+
+local fpsPage=MakePage(); pages["fps"]=fpsPage
+local fpsBtn =MakeSidebarBtn("⚡","FPS Boost","fps")
+
+MakeSectionLabel(fpsPage,"ALL-IN-ONE")
+MakeActionRow(fpsPage,"Ultra Optimize (All-in-One)","Remove effects, clean RAM, lower rendering, disable shadows",function()
+	FPSOpt_UltraOptimizeAll()
+end)
+MakeActionRow(fpsPage,"Clean RAM Now","Junk files, dead enemies, and run garbage collection",function()
+	FPSOpt_CleanRAMNow()
+end)
+
+MakeSectionLabel(fpsPage,"EFFECTS")
+local _,npcEffectsGet,_ = MakeToggleRow(fpsPage,"Remove NPC Effects","Disable particles, trails, fire, smoke and lights on enemies")
+local _,mapShadowsGet,_ = MakeToggleRow(fpsPage,"Disable Map Shadows","Disable CastShadow across the map for better FPS")
+local _,lightingEffectsGet,_ = MakeToggleRow(fpsPage,"Remove Lighting Effects","Remove Blur, Bloom, SunRays, Atmosphere, Fog and other post-processing")
+
+MakeSectionLabel(fpsPage,"RENDERING")
+local qualityRow, qualityTitle = MakeActionRow(fpsPage,"Render Quality Level 1","Tap to cycle — force lowest rendering quality",function() end)
+qualityRow.MouseButton1Click:Connect(function()
+	FPSOpt.qualityLevel = FPSOpt.qualityLevel % 3 + 1
+	FPSOpt_SetRenderQuality(FPSOpt.qualityLevel)
+	qualityTitle.Text = "Render Quality Level " .. FPSOpt.qualityLevel
+end)
+local _,autoRamGet,_ = MakeToggleRow(fpsPage,"Auto RAM Cleaner (Every 30s)","Automatically clean memory and remove dead enemies every 30 seconds")
+MakeSliderRow(fpsPage,"Stretch Screen",30,100,0.65,"%",function(val) FPSOpt_SetStretchScreen(val/100) end)
+
+RunService.Heartbeat:Connect(function()
+	local ww = waterWalkGet()
+	if ww and not SNav.waterWalkConn then SeaNav_StartWaterWalk() end
+	if not ww and SNav.waterWalkConn then SeaNav_StopWaterWalk() end
+
+	local sws = seaWalkSpeedGet()
+	if sws and not SNav.walkSpeedConn then SeaNav_StartWalkSpeed() end
+	if not sws and SNav.walkSpeedConn then SeaNav_StopWalkSpeed() end
+
+	local sjp = seaJumpPowerGet()
+	if sjp and not SNav.jumpPowerConn then SeaNav_StartJumpPower() end
+	if not sjp and SNav.jumpPowerConn then SeaNav_StopJumpPower() end
+
+	local scv = seaClearVisionGet()
+	if scv and not SNav.clearVisionConn then SeaNav_StartClearVision() end
+	if not scv and SNav.clearVisionConn then SeaNav_StopClearVision() end
+
+	local hb = hoverBoatGet()
+	if hb and not SNav.hoverBoatConn then SeaNav_StartHoverBoat() end
+	if not hb and SNav.hoverBoatConn then SeaNav_StopHoverBoat() end
+
+	local bs = boatSpeedGet()
+	if bs and not SNav.boatSpeedConn then SeaNav_StartBoatSpeed() end
+	if not bs and SNav.boatSpeedConn then SeaNav_StopBoatSpeed() end
+
+	local scc = seaCollisionGet()
+	if scc and not SNav.collisionConn then SeaNav_StartSmoothCollision() end
+	if not scc and SNav.collisionConn then SeaNav_StopSmoothCollision() end
+
+	local ne = npcEffectsGet()
+	if ne and not FPSOpt.npcEffectsConn then FPSOpt_StartRemoveNPCEffects() end
+	if not ne and FPSOpt.npcEffectsConn then FPSOpt_StopRemoveNPCEffects() end
+
+	local ms = mapShadowsGet()
+	if ms and not FPSOpt.mapShadowsConn then FPSOpt_StartDisableMapShadows() end
+	if not ms and FPSOpt.mapShadowsConn then FPSOpt_StopDisableMapShadows() end
+
+	local le = lightingEffectsGet()
+	if le and not FPSOpt.lightingConn then FPSOpt_StartRemoveLightingEffects() end
+	if not le and FPSOpt.lightingConn then FPSOpt_StopRemoveLightingEffects() end
+
+	local ar = autoRamGet()
+	if ar and not FPSOpt.autoRamConn then FPSOpt_StartAutoRamCleaner() end
+	if not ar and FPSOpt.autoRamConn then FPSOpt_StopAutoRamCleaner() end
+end)
+
 RunService.Heartbeat:Connect(function()
 	local farmData,level=GetFarmData()
 	if CONFIG.Mode9 then
@@ -1062,6 +1472,8 @@ combatBtn.MouseButton1Click:Connect(function() SetActivePage("combat")   end)
 visualBtn.MouseButton1Click:Connect(function() SetActivePage("visual")   end)
 moveBtn.MouseButton1Click:Connect(function()   SetActivePage("movement") end)
 farmBtn.MouseButton1Click:Connect(function()   SetActivePage("farm")     end)
+seaBtn.MouseButton1Click:Connect(function()   SetActivePage("sea")      end)
+fpsBtn.MouseButton1Click:Connect(function()   SetActivePage("fps")      end)
 SetActivePage("combat")
 
 local contentVisible=true
@@ -1074,6 +1486,9 @@ end)
 closeBtn.MouseButton1Click:Connect(function()
 	RestoreHitbox(); LocalHumanoid.WalkSpeed=BASE_SPEED
 	HideAllESP(); StopDashLoop(); StopFastAttack(); StopFarm()
+	SeaNav_StopWaterWalk(); SeaNav_StopWalkSpeed(); SeaNav_StopJumpPower()
+	SeaNav_StopClearVision(); SeaNav_StopHoverBoat(); SeaNav_StopBoatSpeed(); SeaNav_StopSmoothCollision()
+	FPSOpt_StopRemoveNPCEffects(); FPSOpt_StopDisableMapShadows(); FPSOpt_StopRemoveLightingEffects(); FPSOpt_StopAutoRamCleaner()
 	if fovCircle then pcall(function() fovCircle:Remove() end) end
 	screenGui:Destroy()
 end)
