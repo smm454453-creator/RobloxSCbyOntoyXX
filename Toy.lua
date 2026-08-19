@@ -824,8 +824,20 @@ local function FPSOpt_UltraOptimizeAll()
 	FPSOpt_SetRenderQuality(1)
 end
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name="Ontoy_Hub"; screenGui.ResetOnSpawn=false
-screenGui.Parent=LocalPlayer:WaitForChild("PlayerGui")
+screenGui.Name = "Ontoy_Hub"
+screenGui.ResetOnSpawn = false
+screenGui.IgnoreGuiInset = true
+screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+task.spawn(function()
+	local ok, pg = pcall(function()
+		return LocalPlayer:WaitForChild("PlayerGui", 10)
+	end)
+	if ok and pg then
+		screenGui.Parent = pg
+	else
+		screenGui.Parent = game:GetService("CoreGui")
+	end
+end)
 local REDZ = {
 	BG=Color3.fromRGB(14,12,16), BG2=Color3.fromRGB(20,16,22),
 	Accent=Color3.fromRGB(200,30,50), AccentDim=Color3.fromRGB(120,20,35),
