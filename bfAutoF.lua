@@ -1,77 +1,90 @@
--- ── SKILL LOCK (tambahan module, standalone — plug ke script existing) ────────
-local SkillLock = {}
+-- ==========================================================
+-- BLOX FRUITS SILENT AIM / AUTO AIM SKILL (XENO SUPPORT)
+-- BY ONTOY HUB
+-- ==========================================================
 
-local SKILL_KEYS = {
-    [Enum.KeyCode.Z] = true,
-    [Enum.KeyCode.X] = true,
-    [Enum.KeyCode.C] = true,
-    [Enum.KeyCode.V] = true,
-    [Enum.KeyCode.F] = true, -- melee M1 alt bind sebagian device
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
+
+local LocalPlayer = Players.LocalPlayer
+local Mouse = LocalPlayer:GetMouse()
+local Camera = Workspace.CurrentCamera
+
+-- SETTINGAN UTAMA
+getgenv().SilentAim = {
+    Enabled = true,              -- Status fitur (true / false)
+    FOV = 250,                   -- Jarak/Radius area kunci musuh (dalam pixel)
+    ShowFOV = true,              -- Nampilin lingkaran FOV merah
+    TargetPart = "HumanoidRootPart", -- "Head" atau "HumanoidRootPart"
+    ToggleKey = Enum.KeyCode.RightControl -- Tombol buat On/Off script (Ctrl Kanan)
 }
 
-CONFIG.Mode10 = false          -- Skill Lock toggle
-CONFIG.SkillLockRange = 60     -- studs, jarak maksimal target
+-- Bikin Lingkaran FOV (Biar Kelihatan Musuh yang Masuk Target)
+local Circle = Drawing.new("Circle")
+Circle.Thickness = 1.5
+Circle.Color = Color3.fromRGB(255, 60, 60)
+Circle.Filled = false
+Circle.Transparency = 1
+Circle.NumSides = 64
+Circle.Radius = getgenv().SilentAim.FOV
+Circle.Visible = getgenv().SilentAim.ShowFOV
 
-local function GetSkillLockTarget()
-    local root = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-    if not root then return nil end
-    local best, bestScore = nil, math.huge
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player == LocalPlayer then continue end
-        local char = player.Character
-        if not char then continue end
-        local pRoot = char:FindFirstChild("HumanoidRootPart")
-        local hum   = char:FindFirstChild("Humanoid")
-        if not (pRoot and hum and hum.Health > 0) then continue end
-
-        local dist = (pRoot.Position - root.Position).Magnitude
-        if dist > CONFIG.SkillLockRange then continue end
-
-        local screenPos, onScreen = Camera:WorldToScreenPoint(pRoot.Position)
-        if not onScreen then continue end
-
-        local vp = Camera.ViewportSize
-        local screenDist = (Vector2.new(screenPos.X, screenPos.Y) - Vector2.new(vp.X/2, vp.Y/2)).Magnitude
-        local score = dist * 0.3 + screenDist * 0.7
-
-        if score < bestScore then
-            bestScore = score
-            best = char
-        end
-    end
-    return best
-end
-
--- Snap sesaat pas skill fire, restore sesudahnya — kamera lo kaga kebawa jauh
-local function ExecuteSkillLock()
-    if not CONFIG.Mode10 then return end
-    local target = GetSkillLockTarget()
-    if not target then return end
-    local targetRoot = target:FindFirstChild("HumanoidRootPart")
-    local myRoot = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-    if not targetRoot or not myRoot then return end
-
-    -- rotate root menghadap target — cukup buat sebagian besar skill fruit/sword yang directional
-    local lookCF = CFrame.new(myRoot.Position, Vector3.new(targetRoot.Position.X, myRoot.Position.Y, targetRoot.Position.Z))
-    myRoot.CFrame = lookCF
-
-    -- fire attack registration langsung ke target biar hitbox kena walau delay animasi
-    if RegisterAttack then
-        pcall(function() RegisterAttack:FireServer(targetRoot) end)
-    end
-end
-
-UserInputService.InputBegan:Connect(function(input, gp)
-    if gp then return end
-    if SKILL_KEYS[input.KeyCode] then
-        task.spawn(ExecuteSkillLock)
-    end
+RunService.RenderStepped:Connect(function()
+    Circle.Position = UserInputService:GetMouseLocation()
+    Circle.Radius = getgenv().SilentAim.FOV
+    Circle.Visible = getgenv().SilentAim.ShowFOV and getgenv().SilentAim.Enabled
 end)
 
--- Support klik M1 (mouse) sebagai melee trigger juga
-UserInputService.InputBegan:Connect(function(input, gp)
-    if gp then return end
-    if input.UserInputType == Enum.UserInputType.MouseButton1 and CONFIG.Mode10 then
-        task.spawn(ExecuteSkillLock)
+-- Fungsi Cari Player Terdekat di Dalam FOV
+local function GetClosestTarget()
+    local closestPlayer = nil
+    local shortestDistance = getgenv().SilentAim.FOV
+
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer and plr.Character and plr.Character:FindFirstChild("Humanoid") and plr.Character.Humanoid.Health > 0 then
+            local targetPart = plr.Character:FindFirstChild(getgenv().SilentAim.TargetPart)
+            if targetPart then
+                local screenPos, onScreen = Camera:WorldToViewportPoint(targetPart.Position)
+                if onScreen then
+                    local mousePos = UserInputService:GetMouseLocation()
+                    local dist = (Vector2.new(screenPos.X, screenPos.Y) - mousePos).Magnitude
+                    if dist < shortestDistance then
+                        shortestDistance = dist
+                        closestPlayer = plr
+                    end
+                end
+            end
+        end
+    end
+    return closestPlayer
+end
+
+-- Hook Metamethod __index (Inti dari Silent Aim Skill)
+local oldIndex
+oldIndex = hookmetamethod(game, "__index", newcclosure(function(self, index)
+    if getgenv().SilentAim.Enabled and not checkcaller() and self == Mouse then
+        local idx = tostring(index):lower()
+        if idx == "hit" or idx == "target" then
+            local target = GetClosestTarget()
+            if target and target.Character and target.Character:FindFirstChild(getgenv().SilentAim.TargetPart) then
+                local targetPart = target.Character[getgenv().SilentAim.TargetPart]
+                if idx == "hit" then
+                    return targetPart.CFrame
+                elseif idx == "target" then
+                    return targetPart
+                end
+            end
+        end
+    end
+    return oldIndex(self, index)
+end))
+
+-- Shortcut On/Off (Default: RCtrl)
+UserInputService.InputBegan:Connect(function(input, gpe)
+    if not gpe and input.KeyCode == getgenv().SilentAim.ToggleKey then
+        getgenv().SilentAim.Enabled = not getgenv().SilentAim.Enabled
+        print("[Ontoy Hub] Silent Aim Status:", getgenv().SilentAim.Enabled)
     end
 end)
