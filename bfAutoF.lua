@@ -1,6 +1,4 @@
--- ShadowHawk | South Bronx Compatible Fix
--- Method: hook humanoid state, bypass game movement override
-
+-- ShadowHawk v3 | Noclip + Ghost Walk + Click Teleport
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
@@ -8,76 +6,247 @@ local TweenService = game:GetService("TweenService")
 
 local LocalPlayer = Players.LocalPlayer
 local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+local Camera = workspace.CurrentCamera
 
 local CONFIG = {
-    FastRun = { Enabled = false, TargetSpeed = 50 },
-    HighJump = { Enabled = false, JumpPower = 100 },
+    FastRun    = { Enabled = false, TargetSpeed = 50 },
+    HighJump   = { Enabled = false, JumpPower = 100 },
+    NoClip     = { Enabled = false },
+    GhostWalk  = { Enabled = false, Speed = 40 },
+    TeleClick  = { Enabled = false },
 }
 
--- ========== CORE: Anti-Override Engine ==========
--- Game reset WalkSpeed tiap frame? Kita juga set tiap frame.
--- Bukan ramp lagi — langsung override di Heartbeat priority tinggi.
-
-local speedOverrideConn = nil
-local jumpOverrideConn = nil
-
-local function getHumanoid()
-    local char = LocalPlayer.Character
-    if not char then return nil end
-    return char:FindFirstChildOfClass("Humanoid")
+-- ======== CORE UTILS ========
+local function getChar()
+    return LocalPlayer.Character
 end
 
+local function getHum()
+    local c = getChar()
+    return c and c:FindFirstChildOfClass("Humanoid")
+end
+
+local function getRoot()
+    local c = getChar()
+    return c and c:FindFirstChild("HumanoidRootPart")
+end
+
+-- ======== FAST RUN ========
+local speedConn
 local function startSpeedOverride()
-    if speedOverrideConn then speedOverrideConn:Disconnect() end
-    speedOverrideConn = RunService.Heartbeat:Connect(function()
+    if speedConn then speedConn:Disconnect() end
+    speedConn = RunService.Heartbeat:Connect(function()
         if not CONFIG.FastRun.Enabled then return end
-        local hum = getHumanoid()
-        if hum and hum.WalkSpeed ~= CONFIG.FastRun.TargetSpeed then
-            hum.WalkSpeed = CONFIG.FastRun.TargetSpeed
+        local h = getHum()
+        if h and h.WalkSpeed ~= CONFIG.FastRun.TargetSpeed then
+            h.WalkSpeed = CONFIG.FastRun.TargetSpeed
         end
     end)
 end
 
 local function stopSpeedOverride()
-    if speedOverrideConn then
-        speedOverrideConn:Disconnect()
-        speedOverrideConn = nil
-    end
-    local hum = getHumanoid()
-    if hum then hum.WalkSpeed = 16 end
+    if speedConn then speedConn:Disconnect() speedConn = nil end
+    local h = getHum()
+    if h then h.WalkSpeed = 16 end
 end
 
+-- ======== HIGH JUMP ========
+local jumpConn
 local function startJumpOverride()
-    if jumpOverrideConn then jumpOverrideConn:Disconnect() end
-    jumpOverrideConn = RunService.Heartbeat:Connect(function()
+    if jumpConn then jumpConn:Disconnect() end
+    jumpConn = RunService.Heartbeat:Connect(function()
         if not CONFIG.HighJump.Enabled then return end
-        local hum = getHumanoid()
-        if hum then
-            hum.UseJumpPower = true
-            if hum.JumpPower ~= CONFIG.HighJump.JumpPower then
-                hum.JumpPower = CONFIG.HighJump.JumpPower
+        local h = getHum()
+        if h then
+            h.UseJumpPower = true
+            if h.JumpPower ~= CONFIG.HighJump.JumpPower then
+                h.JumpPower = CONFIG.HighJump.JumpPower
             end
         end
     end)
 end
 
 local function stopJumpOverride()
-    if jumpOverrideConn then
-        jumpOverrideConn:Disconnect()
-        jumpOverrideConn = nil
-    end
-    local hum = getHumanoid()
-    if hum then hum.JumpPower = 50 end
+    if jumpConn then jumpConn:Disconnect() jumpConn = nil end
+    local h = getHum()
+    if h then h.JumpPower = 50 end
 end
 
--- Re-apply on respawn
+-- ======== NO-CLIP ========
+-- Collision dimatiin tiap Stepped — paling reliable
+local noclipConn
+local function setNoClip(state)
+    CONFIG.NoClip.Enabled = state
+    if noclipConn then noclipConn:Disconnect() noclipConn = nil end
+
+    if state then
+        noclipConn = RunService.Stepped:Connect(function()
+            local char = getChar()
+            if not char then return end
+            for _, part in ipairs(char:GetDescendants()) do
+                if part:IsA("BasePart") and part.CanCollide then
+                    part.CanCollide = false
+                end
+            end
+        end)
+    else
+        local char = getChar()
+        if char then
+            for _, part in ipairs(char:GetDescendants()) do
+                if part:IsA("BasePart") then
+                    part.CanCollide = true
+                end
+            end
+        end
+    end
+end
+
+-- ======== GHOST WALK ========
+-- Badan (HRP) freeze di titik asal via Anchoring
+-- Camera + visual ikut gerak bebas
+-- Pas off: commit posisi camera ke HRP (teleport)
+
+local ghostConn
+local ghostOrigin = nil         -- posisi HRP waktu ON
+local ghostCFrame = nil         -- CFrame current ghost position
+local ghostCamera = nil         -- CFrame camera saat ghost aktif
+
+local function setGhostWalk(state)
+    CONFIG.GhostWalk.Enabled = state
+
+    if ghostConn then ghostConn:Disconnect() ghostConn = nil end
+
+    local root = getRoot()
+    local hum  = getHum()
+
+    if state then
+        if not root then return end
+
+        -- Simpan origin, anchor badan
+        ghostOrigin = root.CFrame
+        ghostCFrame = root.CFrame
+        root.Anchored = true
+
+        if hum then
+            hum.WalkSpeed = 0
+            hum.JumpPower = 0
+        end
+
+        -- Ghost movement: WASD gerakin ghostCFrame, bukan badan
+        ghostConn = RunService.RenderStepped:Connect(function(dt)
+            local moveDir = Vector3.new(0, 0, 0)
+            local camLook = Camera.CFrame.LookVector
+            local camRight = Camera.CFrame.RightVector
+
+            -- Flatten biar ga terbang kalau kamera ngadah
+            local forward = Vector3.new(camLook.X, 0, camLook.Z).Unit
+            local right   = Vector3.new(camRight.X, 0, camRight.Z).Unit
+
+            if UserInputService:IsKeyDown(Enum.KeyCode.W) then
+                moveDir = moveDir + forward
+            end
+            if UserInputService:IsKeyDown(Enum.KeyCode.S) then
+                moveDir = moveDir - forward
+            end
+            if UserInputService:IsKeyDown(Enum.KeyCode.A) then
+                moveDir = moveDir - right
+            end
+            if UserInputService:IsKeyDown(Enum.KeyCode.D) then
+                moveDir = moveDir + right
+            end
+            if UserInputService:IsKeyDown(Enum.KeyCode.Space) then
+                moveDir = moveDir + Vector3.new(0, 1, 0)
+            end
+            if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then
+                moveDir = moveDir + Vector3.new(0, -1, 0)
+            end
+
+            if moveDir.Magnitude > 0 then
+                ghostCFrame = ghostCFrame * CFrame.new(
+                    moveDir.Unit * CONFIG.GhostWalk.Speed * dt
+                )
+            end
+
+            -- Lock camera ke ghost position
+            Camera.CameraType = Enum.CameraType.Scriptable
+            Camera.CFrame = CFrame.new(ghostCFrame.Position + Vector3.new(0, 8, 12),
+                ghostCFrame.Position)
+        end)
+
+    else
+        -- Commit: pindah HRP ke posisi ghost, lepas anchor
+        if root and ghostCFrame then
+            root.Anchored = false
+            root.CFrame = ghostCFrame
+
+            -- Kasih server sepersekian detik buat "nerima"
+            task.wait(0.1)
+        end
+
+        -- Restore camera
+        Camera.CameraType = Enum.CameraType.Custom
+
+        if hum then
+            hum.WalkSpeed = CONFIG.FastRun.Enabled and CONFIG.FastRun.TargetSpeed or 16
+            hum.JumpPower = CONFIG.HighJump.Enabled and CONFIG.HighJump.JumpPower or 50
+        end
+
+        ghostOrigin = nil
+        ghostCFrame  = nil
+    end
+end
+
+-- ======== CLICK TELEPORT ========
+-- Raycast ke titik yang diklik, teleport HRP ke sana
+local teleClickConn
+local function setTeleClick(state)
+    CONFIG.TeleClick.Enabled = state
+    if teleClickConn then teleClickConn:Disconnect() teleClickConn = nil end
+
+    if state then
+        teleClickConn = UserInputService.InputBegan:Connect(function(input, gp)
+            if gp then return end
+            if input.UserInputType ~= Enum.UserInputType.MouseButton2 then return end
+
+            local unitRay = Camera:ScreenPointToRay(
+                input.Position.X, input.Position.Y
+            )
+            local rayParams = RaycastParams.new()
+            rayParams.FilterType = Enum.RaycastFilterType.Exclude
+
+            local char = getChar()
+            if char then rayParams.FilterDescendantsInstances = {char} end
+
+            local result = workspace:Raycast(
+                unitRay.Origin, unitRay.Direction * 500, rayParams
+            )
+
+            if result then
+                local root = getRoot()
+                if root then
+                    -- Offset sedikit dari ground biar ga stuck
+                    root.CFrame = CFrame.new(result.Position + Vector3.new(0, 3, 0))
+                end
+            end
+        end)
+    end
+end
+
+-- Respawn handler
 LocalPlayer.CharacterAdded:Connect(function()
     task.wait(1.5)
+    -- Reset ghost kalau lagi aktif
+    if CONFIG.GhostWalk.Enabled then
+        CONFIG.GhostWalk.Enabled = false
+        Camera.CameraType = Enum.CameraType.Custom
+    end
     if CONFIG.FastRun.Enabled then startSpeedOverride() end
     if CONFIG.HighJump.Enabled then startJumpOverride() end
+    if CONFIG.NoClip.Enabled then setNoClip(true) end
+    if CONFIG.TeleClick.Enabled then setTeleClick(true) end
 end)
 
--- ========== UI ==========
+-- ======== UI ========
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "SHMenu"
 ScreenGui.ResetOnSpawn = false
@@ -112,9 +281,10 @@ IconLabel.ZIndex = 11
 IconLabel.Parent = IconBtn
 
 -- Panel
+local PANEL_H = 460
 local Panel = Instance.new("Frame")
-Panel.Size = UDim2.new(0, 220, 0, 280)
-Panel.Position = UDim2.new(0, 76, 0.5, -140)
+Panel.Size = UDim2.new(0, 220, 0, PANEL_H)
+Panel.Position = UDim2.new(0, 76, 0.5, -PANEL_H/2)
 Panel.BackgroundColor3 = Color3.fromRGB(15, 15, 22)
 Panel.BorderSizePixel = 0
 Panel.ClipsDescendants = true
@@ -128,7 +298,6 @@ PanelStroke.Color = Color3.fromRGB(100, 80, 255)
 PanelStroke.Thickness = 1.5
 PanelStroke.Parent = Panel
 
--- Title bar
 local Title = Instance.new("TextLabel")
 Title.Size = UDim2.new(1, 0, 0, 36)
 Title.BackgroundColor3 = Color3.fromRGB(25, 20, 45)
@@ -143,10 +312,25 @@ Title.Parent = Panel
 
 Instance.new("UICorner", Title).CornerRadius = UDim.new(0, 12)
 
--- Toggle builder
+-- Section label helper
+local function makeSection(parent, text, yPos)
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(1, -24, 0, 18)
+    lbl.Position = UDim2.new(0, 12, 0, yPos)
+    lbl.BackgroundTransparency = 1
+    lbl.Text = text
+    lbl.TextColor3 = Color3.fromRGB(120, 100, 200)
+    lbl.TextScaled = true
+    lbl.Font = Enum.Font.GothamBold
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.ZIndex = 6
+    lbl.Parent = parent
+end
+
+-- Toggle helper
 local function makeToggle(parent, labelText, yPos, onToggle)
     local Row = Instance.new("Frame")
-    Row.Size = UDim2.new(1, -24, 0, 38)
+    Row.Size = UDim2.new(1, -24, 0, 36)
     Row.Position = UDim2.new(0, 12, 0, yPos)
     Row.BackgroundTransparency = 1
     Row.ZIndex = 6
@@ -212,10 +396,10 @@ local function makeToggle(parent, labelText, yPos, onToggle)
     end)
 end
 
--- Slider builder
+-- Slider helper
 local function makeSlider(parent, labelText, yPos, minVal, maxVal, defaultVal, onChange)
     local Row = Instance.new("Frame")
-    Row.Size = UDim2.new(1, -24, 0, 46)
+    Row.Size = UDim2.new(1, -24, 0, 44)
     Row.Position = UDim2.new(0, 12, 0, yPos)
     Row.BackgroundTransparency = 1
     Row.ZIndex = 6
@@ -255,7 +439,7 @@ local function makeSlider(parent, labelText, yPos, minVal, maxVal, defaultVal, o
     Instance.new("UICorner", Track).CornerRadius = UDim.new(1, 0)
 
     local Fill = Instance.new("Frame")
-    Fill.Size = UDim2.new((defaultVal - minVal) / (maxVal - minVal), 0, 1, 0)
+    Fill.Size = UDim2.new((defaultVal - minVal)/(maxVal - minVal), 0, 1, 0)
     Fill.BackgroundColor3 = Color3.fromRGB(100, 80, 255)
     Fill.BorderSizePixel = 0
     Fill.ZIndex = 8
@@ -272,21 +456,13 @@ local function makeSlider(parent, labelText, yPos, minVal, maxVal, defaultVal, o
     Dragger.Parent = Track
 
     local dragging = false
-
     Dragger.MouseButton1Down:Connect(function() dragging = true end)
-
     UserInputService.InputEnded:Connect(function(i)
-        if i.UserInputType == Enum.UserInputType.MouseButton1 then
-            dragging = false
-        end
+        if i.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false end
     end)
-
     UserInputService.InputChanged:Connect(function(i)
-        if not dragging then return end
-        if i.UserInputType ~= Enum.UserInputType.MouseMovement then return end
-        local rel = math.clamp(
-            (i.Position.X - Track.AbsolutePosition.X) / Track.AbsoluteSize.X, 0, 1
-        )
+        if not dragging or i.UserInputType ~= Enum.UserInputType.MouseMovement then return end
+        local rel = math.clamp((i.Position.X - Track.AbsolutePosition.X) / Track.AbsoluteSize.X, 0, 1)
         local val = math.floor(minVal + rel * (maxVal - minVal))
         Fill.Size = UDim2.new(rel, 0, 1, 0)
         ValLabel.Text = tostring(val)
@@ -294,65 +470,92 @@ local function makeSlider(parent, labelText, yPos, minVal, maxVal, defaultVal, o
     end)
 end
 
--- Build controls
-makeToggle(Panel, "Fast Run", 44, function(state)
-    CONFIG.FastRun.Enabled = state
-    if state then startSpeedOverride() else stopSpeedOverride() end
+-- Hint label helper
+local function makeHint(parent, text, yPos)
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(1, -24, 0, 16)
+    lbl.Position = UDim2.new(0, 12, 0, yPos)
+    lbl.BackgroundTransparency = 1
+    lbl.Text = text
+    lbl.TextColor3 = Color3.fromRGB(90, 85, 120)
+    lbl.TextScaled = true
+    lbl.Font = Enum.Font.Gotham
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.ZIndex = 6
+    lbl.Parent = parent
+end
+
+-- ---- Build controls ----
+-- Movement
+makeSection(Panel, "MOVEMENT", 42)
+makeToggle(Panel, "Fast Run", 62, function(s)
+    CONFIG.FastRun.Enabled = s
+    if s then startSpeedOverride() else stopSpeedOverride() end
+end)
+makeSlider(Panel, "Speed", 100, 17, 100, 50, function(v)
+    CONFIG.FastRun.TargetSpeed = v
+end)
+makeToggle(Panel, "High Jump", 148, function(s)
+    CONFIG.HighJump.Enabled = s
+    if s then startJumpOverride() else stopJumpOverride() end
+end)
+makeSlider(Panel, "Jump Power", 186, 51, 300, 100, function(v)
+    CONFIG.HighJump.JumpPower = v
 end)
 
-makeSlider(Panel, "Speed", 90, 17, 100, 50, function(val)
-    CONFIG.FastRun.TargetSpeed = val
+-- Utility
+makeSection(Panel, "UTILITY", 238)
+makeToggle(Panel, "No-Clip", 258, function(s)
+    setNoClip(s)
+end)
+makeHint(Panel, "Tembus semua object/wall", 296)
+
+makeToggle(Panel, "Ghost Walk", 318, function(s)
+    setGhostWalk(s)
+end)
+makeHint(Panel, "WASD ghost, Off = teleport ke sana", 356)
+makeSlider(Panel, "Ghost Speed", 374, 10, 120, 40, function(v)
+    CONFIG.GhostWalk.Speed = v
 end)
 
-makeToggle(Panel, "High Jump", 148, function(state)
-    CONFIG.HighJump.Enabled = state
-    if state then startJumpOverride() else stopJumpOverride() end
+makeToggle(Panel, "Click Teleport", 420, function(s)
+    setTeleClick(s)
 end)
+makeHint(Panel, "Right-click permukaan = teleport", 458)
 
-makeSlider(Panel, "Jump Power", 194, 51, 300, 100, function(val)
-    CONFIG.HighJump.JumpPower = val
-end)
-
--- Hide/show panel
+-- ---- Hide/Show ----
 local panelVisible = true
-
 IconBtn.MouseButton1Click:Connect(function()
     panelVisible = not panelVisible
     local tw = TweenInfo.new(0.25, Enum.EasingStyle.Quart)
     if panelVisible then
         Panel.Visible = true
-        TweenService:Create(Panel, tw, {Size = UDim2.new(0, 220, 0, 280)}):Play()
+        TweenService:Create(Panel, tw, {Size = UDim2.new(0, 220, 0, PANEL_H)}):Play()
         TweenService:Create(IconStroke, tw, {Color = Color3.fromRGB(100, 80, 255)}):Play()
     else
-        TweenService:Create(Panel, tw, {Size = UDim2.new(0, 0, 0, 280)}):Play()
+        TweenService:Create(Panel, tw, {Size = UDim2.new(0, 0, 0, PANEL_H)}):Play()
         TweenService:Create(IconStroke, tw, {Color = Color3.fromRGB(60, 55, 90)}):Play()
         task.delay(0.25, function() Panel.Visible = false end)
     end
 end)
 
--- Draggable icon + panel follow
+-- ---- Draggable icon ----
 local draggingIcon, dragStart, startPos = false, nil, nil
-
 IconBtn.MouseButton1Down:Connect(function(x, y)
     draggingIcon = true
     dragStart = Vector2.new(x, y)
     startPos = IconBtn.Position
 end)
-
 UserInputService.InputEnded:Connect(function(i)
-    if i.UserInputType == Enum.UserInputType.MouseButton1 then
-        draggingIcon = false
-    end
+    if i.UserInputType == Enum.UserInputType.MouseButton1 then draggingIcon = false end
 end)
-
 UserInputService.InputChanged:Connect(function(i)
-    if not draggingIcon then return end
-    if i.UserInputType ~= Enum.UserInputType.MouseMovement then return end
+    if not draggingIcon or i.UserInputType ~= Enum.UserInputType.MouseMovement then return end
     local delta = Vector2.new(i.Position.X, i.Position.Y) - dragStart
     local newX = startPos.X.Offset + delta.X
     local newY = startPos.Y.Offset + delta.Y
     IconBtn.Position = UDim2.new(startPos.X.Scale, newX, startPos.Y.Scale, newY)
-    Panel.Position = UDim2.new(0, newX + 60, startPos.Y.Scale, newY - 116)
+    Panel.Position = UDim2.new(0, newX + 60, startPos.Y.Scale, newY - PANEL_H/2 + 24)
 end)
 
-print("[SH] Loaded | Anti-override engine active")
+print("[SH] v3 Loaded | Noclip + GhostWalk + ClickTeleport")
