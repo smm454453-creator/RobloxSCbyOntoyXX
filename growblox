@@ -1,0 +1,292 @@
+-- Infinite Jump | Executor Script
+-- Compatible: Synapse X / KRNL / Xeno / Fluxus
+
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+
+local lp = Players.LocalPlayer
+local mouse = lp:GetMouse()
+
+-- ============================================================
+-- STATE
+-- ============================================================
+local State = {
+    InfiniteJump = false,
+    JumpPower    = 50,   -- default roblox = 50
+}
+
+-- ============================================================
+-- JUMP HOOK
+-- ============================================================
+local jumpConn
+
+local function enableJump()
+    jumpConn = UserInputService.JumpRequest:Connect(function()
+        local char = lp.Character
+        if not char then return end
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if not hum then return end
+        if hum:GetState() == Enum.HumanoidStateType.Jumping or
+           hum:GetState() == Enum.HumanoidStateType.Freefall then
+            hum:ChangeState(Enum.HumanoidStateType.Jumping)
+        end
+    end)
+end
+
+local function disableJump()
+    if jumpConn then
+        jumpConn:Disconnect()
+        jumpConn = nil
+    end
+end
+
+-- ============================================================
+-- UI
+-- ============================================================
+local gui = Instance.new("ScreenGui")
+gui.Name = "InfJumpUI"
+gui.ResetOnSpawn = false
+gui.IgnoreGuiInset = true
+gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+gui.Parent = gethui and gethui() or lp:WaitForChild("PlayerGui")
+
+-- Main window
+local win = Instance.new("Frame")
+win.Name = "Window"
+win.Size = UDim2.new(0, 240, 0, 160)
+win.Position = UDim2.new(0.5, -120, 0.04, 0)
+win.BackgroundColor3 = Color3.fromRGB(15, 15, 20)
+win.BorderSizePixel = 0
+win.Active = true
+win.Draggable = true
+win.Parent = gui
+
+local winCorner = Instance.new("UICorner")
+winCorner.CornerRadius = UDim.new(0, 12)
+winCorner.Parent = win
+
+local winStroke = Instance.new("UIStroke")
+winStroke.Color = Color3.fromRGB(80, 80, 180)
+winStroke.Thickness = 1.5
+winStroke.Parent = win
+
+-- Title bar
+local titleBar = Instance.new("Frame")
+titleBar.Size = UDim2.new(1, 0, 0, 36)
+titleBar.BackgroundColor3 = Color3.fromRGB(25, 25, 40)
+titleBar.BorderSizePixel = 0
+titleBar.Parent = win
+
+local titleCorner = Instance.new("UICorner")
+titleCorner.CornerRadius = UDim.new(0, 12)
+titleCorner.Parent = titleBar
+
+-- fix bottom corners on titlebar
+local titleFix = Instance.new("Frame")
+titleFix.Size = UDim2.new(1, 0, 0.5, 0)
+titleFix.Position = UDim2.new(0, 0, 0.5, 0)
+titleFix.BackgroundColor3 = Color3.fromRGB(25, 25, 40)
+titleFix.BorderSizePixel = 0
+titleFix.Parent = titleBar
+
+local titleLabel = Instance.new("TextLabel")
+titleLabel.Size = UDim2.new(1, -40, 1, 0)
+titleLabel.Position = UDim2.new(0, 12, 0, 0)
+titleLabel.BackgroundTransparency = 1
+titleLabel.Text = "⚡ Infinite Jump"
+titleLabel.TextColor3 = Color3.fromRGB(180, 180, 255)
+titleLabel.Font = Enum.Font.GothamBold
+titleLabel.TextSize = 15
+titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+titleLabel.Parent = titleBar
+
+-- Close button
+local closeBtn = Instance.new("TextButton")
+closeBtn.Size = UDim2.new(0, 24, 0, 24)
+closeBtn.Position = UDim2.new(1, -30, 0.5, -12)
+closeBtn.BackgroundColor3 = Color3.fromRGB(180, 50, 50)
+closeBtn.Text = "✕"
+closeBtn.TextColor3 = Color3.new(1, 1, 1)
+closeBtn.Font = Enum.Font.GothamBold
+closeBtn.TextSize = 13
+closeBtn.BorderSizePixel = 0
+closeBtn.Parent = titleBar
+
+local closeBtnCorner = Instance.new("UICorner")
+closeBtnCorner.CornerRadius = UDim.new(0, 6)
+closeBtnCorner.Parent = closeBtn
+
+closeBtn.MouseButton1Click:Connect(function()
+    disableJump()
+    gui:Destroy()
+end)
+
+-- ============================================================
+-- TOGGLE BUTTON
+-- ============================================================
+local toggleBtn = Instance.new("TextButton")
+toggleBtn.Size = UDim2.new(1, -30, 0, 42)
+toggleBtn.Position = UDim2.new(0, 15, 0, 48)
+toggleBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 60)
+toggleBtn.Text = "Infinite Jump: OFF"
+toggleBtn.TextColor3 = Color3.fromRGB(180, 180, 180)
+toggleBtn.Font = Enum.Font.GothamBold
+toggleBtn.TextSize = 15
+toggleBtn.BorderSizePixel = 0
+toggleBtn.Parent = win
+
+local toggleCorner = Instance.new("UICorner")
+toggleCorner.CornerRadius = UDim.new(0, 10)
+toggleCorner.Parent = toggleBtn
+
+local toggleStroke = Instance.new("UIStroke")
+toggleStroke.Color = Color3.fromRGB(60, 60, 90)
+toggleStroke.Thickness = 1.2
+toggleStroke.Parent = toggleBtn
+
+local function setToggleVisual(enabled)
+    local targetBg    = enabled and Color3.fromRGB(40, 160, 90)   or Color3.fromRGB(40, 40, 60)
+    local targetText  = enabled and Color3.fromRGB(200, 255, 220) or Color3.fromRGB(180, 180, 180)
+    local targetStroke = enabled and Color3.fromRGB(60, 220, 110) or Color3.fromRGB(60, 60, 90)
+
+    TweenService:Create(toggleBtn, TweenInfo.new(0.2), {
+        BackgroundColor3 = targetBg,
+        TextColor3       = targetText,
+    }):Play()
+    TweenService:Create(toggleStroke, TweenInfo.new(0.2), {
+        Color = targetStroke,
+    }):Play()
+
+    toggleBtn.Text = "Infinite Jump: " .. (enabled and "ON" or "OFF")
+end
+
+toggleBtn.MouseButton1Click:Connect(function()
+    State.InfiniteJump = not State.InfiniteJump
+    setToggleVisual(State.InfiniteJump)
+    if State.InfiniteJump then
+        enableJump()
+    else
+        disableJump()
+    end
+end)
+
+-- ============================================================
+-- JUMP POWER SLIDER
+-- ============================================================
+local sliderLabel = Instance.new("TextLabel")
+sliderLabel.Size = UDim2.new(1, -30, 0, 18)
+sliderLabel.Position = UDim2.new(0, 15, 0, 100)
+sliderLabel.BackgroundTransparency = 1
+sliderLabel.Text = "Jump Power: 50"
+sliderLabel.TextColor3 = Color3.fromRGB(160, 160, 200)
+sliderLabel.Font = Enum.Font.Gotham
+sliderLabel.TextSize = 13
+sliderLabel.TextXAlignment = Enum.TextXAlignment.Left
+sliderLabel.Parent = win
+
+local sliderTrack = Instance.new("Frame")
+sliderTrack.Size = UDim2.new(1, -30, 0, 8)
+sliderTrack.Position = UDim2.new(0, 15, 0, 124)
+sliderTrack.BackgroundColor3 = Color3.fromRGB(40, 40, 60)
+sliderTrack.BorderSizePixel = 0
+sliderTrack.Parent = win
+
+local sliderTrackCorner = Instance.new("UICorner")
+sliderTrackCorner.CornerRadius = UDim.new(1, 0)
+sliderTrackCorner.Parent = sliderTrack
+
+local sliderFill = Instance.new("Frame")
+sliderFill.Size = UDim2.new(0.2, 0, 1, 0) -- 50/250 = 0.2 default
+sliderFill.BackgroundColor3 = Color3.fromRGB(80, 160, 255)
+sliderFill.BorderSizePixel = 0
+sliderFill.Parent = sliderTrack
+
+local sliderFillCorner = Instance.new("UICorner")
+sliderFillCorner.CornerRadius = UDim.new(1, 0)
+sliderFillCorner.Parent = sliderFill
+
+local sliderKnob = Instance.new("TextButton")
+sliderKnob.Size = UDim2.new(0, 18, 0, 18)
+sliderKnob.AnchorPoint = Vector2.new(0.5, 0.5)
+sliderKnob.Position = UDim2.new(0.2, 0, 0.5, 0)
+sliderKnob.BackgroundColor3 = Color3.fromRGB(180, 210, 255)
+sliderKnob.Text = ""
+sliderKnob.BorderSizePixel = 0
+sliderKnob.ZIndex = 3
+sliderKnob.Parent = sliderTrack
+
+local knobCorner = Instance.new("UICorner")
+knobCorner.CornerRadius = UDim.new(1, 0)
+knobCorner.Parent = sliderKnob
+
+-- Slider drag logic
+local MIN_POWER = 50
+local MAX_POWER = 500
+local dragging = false
+
+local function applyJumpPower(value)
+    local char = lp.Character
+    if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if hum then hum.JumpPower = value end
+end
+
+local function updateSlider(inputX)
+    local trackPos   = sliderTrack.AbsolutePosition.X
+    local trackWidth = sliderTrack.AbsoluteSize.X
+    local rel = math.clamp((inputX - trackPos) / trackWidth, 0, 1)
+
+    State.JumpPower = math.floor(MIN_POWER + rel * (MAX_POWER - MIN_POWER))
+    sliderFill.Size = UDim2.new(rel, 0, 1, 0)
+    sliderKnob.Position = UDim2.new(rel, 0, 0.5, 0)
+    sliderLabel.Text = "Jump Power: " .. State.JumpPower
+    applyJumpPower(State.JumpPower)
+end
+
+sliderKnob.MouseButton1Down:Connect(function()
+    dragging = true
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+        updateSlider(input.Position.X)
+    end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        dragging = false
+    end
+end)
+
+sliderTrack.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        updateSlider(input.Position.X)
+    end
+end)
+
+-- ============================================================
+-- KEYBIND: Q = toggle
+-- ============================================================
+UserInputService.InputBegan:Connect(function(input, gpe)
+    if gpe then return end
+    if input.KeyCode == Enum.KeyCode.Q then
+        toggleBtn.MouseButton1Click:Fire()
+    end
+end)
+
+-- ============================================================
+-- APPLY JUMP POWER ON RESPAWN
+-- ============================================================
+lp.CharacterAdded:Connect(function(newChar)
+    char = newChar
+    local hum = newChar:WaitForChild("Humanoid")
+    hum.JumpPower = State.JumpPower
+    if State.InfiniteJump then
+        disableJump()
+        enableJump()
+    end
+end)
+
+print("[InfJump] Loaded — Q to toggle")
